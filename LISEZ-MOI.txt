@@ -1,0 +1,7 @@
+VARIABLES À METTRE DANS VERCEL (Settings > Environment Variables)
+(le fichier .env n'est volontairement pas envoyé sur GitHub)
+
+VITE_SUPABASE_URL       = https://apghkptqrzqrljxdhwat.supabase.co
+VITE_SUPABASE_ANON_KEY  = sb_publishable_0NOYRnV13oITtaDLWZXgPw_3ylqDTec
+
+schema.sql : à coller dans Supabase > SQL Editor > Run (une seule fois).
