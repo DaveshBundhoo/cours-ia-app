@@ -269,38 +269,36 @@ function PlanningView() {
   const [erreur, setErreur] = useState("");
 
   useEffect(() => {
-    async function chargerCalendrier() {
-      try {
-        const icsUrl = "https://cloud.timeedit.net/fr_gge/web/public/s.ics?i=6Z9Q0Q6n5Z5aQu988632YoyZZQ0Q55";
-        // Utilisation d'un proxy différent et demande de texte brut (raw)
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(icsUrl)}`;
-        
-        const res = await fetch(proxyUrl);
-        if (!res.ok) throw new Error(`Le serveur a répondu avec le code ${res.status}`);
-        
-        const text = await res.text();
-        
-        // Vérification de sécurité pour s'assurer qu'on a bien reçu un calendrier
-        if (text && text.includes("BEGIN:VCALENDAR")) {
-          const parsedEvents = parseICS(text);
-          
-          // Garder uniquement les événements à partir d'aujourd'hui
-          const aujourdhui = new Date();
-          aujourdhui.setHours(0, 0, 0, 0);
-          
-          const aVenir = parsedEvents.filter(e => e.fin >= aujourdhui);
-          setEvents(aVenir);
-        } else {
-          throw new Error("Le format reçu n'est pas un calendrier valide");
-        }
-      } catch (err) {
-        console.error("Détails de l'erreur calendrier :", err);
-        setErreur(`Impossible de charger le calendrier : ${err.message}. (Si vous avez un bloqueur de publicité, essayez de le désactiver sur cette page).`);
-      } finally {
-        setLoading(false);
-      }
+    const aVenirDe = (txt) => {
+      const t = new Date();
+      t.setHours(0, 0, 0, 0);
+      return parseICS(txt).filter((e) => (e.fin || e.debut) >= t);
+    };
+
+    // 1) affiche tout de suite le dernier planning connu (si on en a un)
+    let cache = null;
+    try { cache = localStorage.getItem("edt-cache"); } catch (e) {}
+    if (cache) {
+      try { setEvents(aVenirDe(cache)); setLoading(false); } catch (e) {}
     }
-    chargerCalendrier();
+
+    // 2) puis le met à jour depuis TimeEdit (via la fonction /api/edt)
+    fetch("/api/edt")
+      .then(async (r) => {
+        if (!r.ok) {
+          let d = "";
+          try { d = (await r.json()).error; } catch (e) {}
+          throw new Error(d || "Calendrier indisponible (" + r.status + ")");
+        }
+        return r.text();
+      })
+      .then((txt) => {
+        setEvents(aVenirDe(txt));
+        setErreur("");
+        try { localStorage.setItem("edt-cache", txt); } catch (e) {}
+      })
+      .catch((err) => { if (!cache) setErreur(err.message); })
+      .finally(() => setLoading(false));
   }, []);
 
   // Grouper les événements par date
@@ -308,6 +306,7 @@ function PlanningView() {
     const groupes = {};
     events.forEach(e => {
       const dateStr = e.debut.toLocaleDateString("fr-FR", { weekday: 'long', day: 'numeric', month: 'long' });
+      // Majuscule sur la première lettre du jour
       const datePropre = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
       if (!groupes[datePropre]) groupes[datePropre] = [];
       groupes[datePropre].push(e);
@@ -316,7 +315,7 @@ function PlanningView() {
   }, [events]);
 
   if (loading) return <div className="placeholder-view"><p>⏳ Synchronisation du planning en cours...</p></div>;
-  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)", maxWidth: 600, margin: "0 auto" }}>{erreur}</p></div>;
+  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)" }}>{erreur}</p></div>;
   if (events.length === 0) return <div className="placeholder-view"><p className="muted">Aucun cours à venir trouvé dans le calendrier.</p></div>;
 
   return (
@@ -340,8 +339,7 @@ function PlanningView() {
                       <h4 style={{ fontSize: 16, marginBottom: 4 }}>{cours.matiere}</h4>
                       <div className="muted" style={{ fontSize: 14 }}>
                         {cours.debut.toLocaleTimeString("fr-FR", {hour: '2-digit', minute:'2-digit'})} 
-                        {' - '} 
-                        {cours.fin.toLocaleTimeString("fr-FR", {hour: '2-digit', minute:'2-digit'})}
+                        {cours.fin && <> {' - '} {cours.fin.toLocaleTimeString("fr-FR", {hour: '2-digit', minute:'2-digit'})}</>}
                       </div>
                     </div>
                     {cours.salle && (
@@ -364,50 +362,48 @@ function PlanningView() {
 }
 
 // Fonction utilitaire pour décoder le format ICS (iCalendar)
+function unescapeICS(t = "") {
+  return t.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\").trim();
+}
+
 function parseICS(icsText) {
-  if (!icsText) return [];
-  // Gérer les lignes coupées (TimeEdit fait parfois ça)
-  const unfolded = icsText.replace(/\r\n[ \t]/g, '');
+  // Recolle les lignes coupées (TimeEdit le fait parfois)
+  const unfolded = icsText.replace(/\r?\n[ \t]/g, "");
   const lines = unfolded.split(/\r\n|\n|\r/);
   const events = [];
   let currentEvent = null;
 
-  lines.forEach(line => {
-    if (line === 'BEGIN:VEVENT') {
+  lines.forEach((line) => {
+    if (line === "BEGIN:VEVENT") {
       currentEvent = {};
-    } else if (line === 'END:VEVENT') {
+    } else if (line === "END:VEVENT") {
       if (currentEvent && currentEvent.debut) events.push(currentEvent);
       currentEvent = null;
     } else if (currentEvent) {
-      const match = line.match(/^([^:]+):(.*)$/);
-      if (match) {
-        const [, fullKey, value] = match;
-        const key = fullKey.split(';')[0]; // Ignorer les attributs comme TZID
-        
-        if (key === 'SUMMARY') currentEvent.matiere = value;
-        if (key === 'LOCATION') currentEvent.salle = value;
-        if (key === 'DESCRIPTION') currentEvent.description = value;
-        if (key === 'DTSTART') currentEvent.debut = parseICSDate(value);
-        if (key === 'DTEND') currentEvent.fin = parseICSDate(value);
-      }
+      const i = line.indexOf(":");
+      if (i < 0) return;
+      const key = line.slice(0, i).split(";")[0].toUpperCase(); // ignore TZID etc.
+      const value = line.slice(i + 1);
+
+      if (key === "SUMMARY") currentEvent.matiere = unescapeICS(value);
+      if (key === "LOCATION") currentEvent.salle = unescapeICS(value);
+      if (key === "DESCRIPTION") currentEvent.description = unescapeICS(value);
+      if (key === "DTSTART") currentEvent.debut = parseICSDate(value);
+      if (key === "DTEND") currentEvent.fin = parseICSDate(value);
     }
   });
   return events.sort((a, b) => a.debut - b.debut);
 }
 
-// Transforme la date ICS (ex: 20241007T083000) en objet Date Javascript
-function parseICSDate(icsDateStr) {
-  const match = icsDateStr.match(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
-  if (match) {
-    const [, y, m, d, h, min, s] = match;
-    if (icsDateStr.endsWith('Z')) {
-      return new Date(Date.UTC(y, m - 1, d, h, min, s));
-    } else {
-      return new Date(y, m - 1, d, h, min, s);
-    }
-  }
-  return new Date();
+// Transforme la date ICS (ex: 20241007T083000Z ou 20241007) en objet Date Javascript
+function parseICSDate(str) {
+  const m = str.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
+  if (!m) return null;
+  const [, y, mo, d, h = 0, mi = 0, sec = 0, z] = m;
+  const n = [y, mo - 1, d, h, mi, sec].map(Number);
+  return z ? new Date(Date.UTC(...n)) : new Date(...n);
 }
+
 
 /* ---------------- Vue Annuaire ---------------- */
 function AnnuaireView({ isAdmin }) {
