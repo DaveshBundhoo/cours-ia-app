@@ -31,6 +31,9 @@ export default async function handler(req, res) {
         contentType: r.headers.get("content-type"),
         longueur: text.length,
         commenceParBeginVcalendar: text.includes("BEGIN:VCALENDAR"),
+        nombreDeCours: (text.match(/BEGIN:VEVENT/g) || []).length,
+        premieresDates: (text.match(/DTSTART[^:\n]*:[^\r\n]+/g) || []).slice(0, 5),
+        dernieresDates: (text.match(/DTSTART[^:\n]*:[^\r\n]+/g) || []).slice(-5),
         debut: text.slice(0, 300),
       });
     }
