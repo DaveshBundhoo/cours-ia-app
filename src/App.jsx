@@ -272,14 +272,17 @@ function PlanningView() {
     async function chargerCalendrier() {
       try {
         const icsUrl = "https://cloud.timeedit.net/fr_gge/web/public/s.ics?i=6Z9Q0Q6n5Z5aQu988632YoyZZQ0Q55";
-        // Utilisation d'un proxy pour éviter l'erreur CORS bloquant la lecture du calendrier
-        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(icsUrl)}`;
+        // Utilisation d'un proxy différent et demande de texte brut (raw)
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(icsUrl)}`;
         
         const res = await fetch(proxyUrl);
-        const data = await res.json();
+        if (!res.ok) throw new Error(`Le serveur a répondu avec le code ${res.status}`);
         
-        if (data.contents) {
-          const parsedEvents = parseICS(data.contents);
+        const text = await res.text();
+        
+        // Vérification de sécurité pour s'assurer qu'on a bien reçu un calendrier
+        if (text && text.includes("BEGIN:VCALENDAR")) {
+          const parsedEvents = parseICS(text);
           
           // Garder uniquement les événements à partir d'aujourd'hui
           const aujourdhui = new Date();
@@ -288,10 +291,11 @@ function PlanningView() {
           const aVenir = parsedEvents.filter(e => e.fin >= aujourdhui);
           setEvents(aVenir);
         } else {
-          setErreur("Impossible de récupérer les données du calendrier.");
+          throw new Error("Le format reçu n'est pas un calendrier valide");
         }
       } catch (err) {
-        setErreur("Erreur de connexion au calendrier.");
+        console.error("Détails de l'erreur calendrier :", err);
+        setErreur(`Impossible de charger le calendrier : ${err.message}. (Si vous avez un bloqueur de publicité, essayez de le désactiver sur cette page).`);
       } finally {
         setLoading(false);
       }
@@ -304,7 +308,6 @@ function PlanningView() {
     const groupes = {};
     events.forEach(e => {
       const dateStr = e.debut.toLocaleDateString("fr-FR", { weekday: 'long', day: 'numeric', month: 'long' });
-      // Majuscule sur la première lettre du jour
       const datePropre = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
       if (!groupes[datePropre]) groupes[datePropre] = [];
       groupes[datePropre].push(e);
@@ -313,7 +316,7 @@ function PlanningView() {
   }, [events]);
 
   if (loading) return <div className="placeholder-view"><p>⏳ Synchronisation du planning en cours...</p></div>;
-  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)" }}>{erreur}</p></div>;
+  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)", maxWidth: 600, margin: "0 auto" }}>{erreur}</p></div>;
   if (events.length === 0) return <div className="placeholder-view"><p className="muted">Aucun cours à venir trouvé dans le calendrier.</p></div>;
 
   return (
@@ -362,6 +365,7 @@ function PlanningView() {
 
 // Fonction utilitaire pour décoder le format ICS (iCalendar)
 function parseICS(icsText) {
+  if (!icsText) return [];
   // Gérer les lignes coupées (TimeEdit fait parfois ça)
   const unfolded = icsText.replace(/\r\n[ \t]/g, '');
   const lines = unfolded.split(/\r\n|\n|\r/);
@@ -404,7 +408,6 @@ function parseICSDate(icsDateStr) {
   }
   return new Date();
 }
-
 
 /* ---------------- Vue Annuaire ---------------- */
 function AnnuaireView({ isAdmin }) {
