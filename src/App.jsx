@@ -6,8 +6,6 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-const MATIERES = ["Maths", "Physique", "Histoire", "Anglais", "Informatique", "SVT"];
-
 export default function App() {
   const [session, setSession] = useState(null);
   const [ready, setReady] = useState(false);
@@ -17,7 +15,9 @@ export default function App() {
       setSession(data.session);
       setReady(true);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -34,6 +34,7 @@ function Login() {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [pwd, setPwd] = useState("");
+  const [prenom, setPrenom] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -41,12 +42,23 @@ function Login() {
     e.preventDefault();
     setBusy(true);
     setMsg("");
-    const { error } =
-      mode === "login"
-        ? await supabase.auth.signInWithPassword({ email, password: pwd })
-        : await supabase.auth.signUp({ email, password: pwd });
+    
+    let error;
+    if (mode === "login") {
+      const res = await supabase.auth.signInWithPassword({ email, password: pwd });
+      error = res.error;
+    } else {
+      const res = await supabase.auth.signUp({ 
+        email, 
+        password: pwd,
+        options: { data: { prenom: prenom.trim() } }
+      });
+      error = res.error;
+    }
+
     if (error) setMsg(error.message);
     else if (mode === "signup") setMsg("Compte créé ! Vérifie tes mails pour confirmer, puis connecte-toi.");
+    
     setBusy(false);
   }
 
@@ -58,6 +70,14 @@ function Login() {
         </div>
         <h1>{mode === "login" ? "Connexion" : "Créer un compte"}</h1>
         <form className="card" onSubmit={submit}>
+          {mode === "signup" && (
+            <>
+              <label>Prénom
+                <input type="text" required value={prenom} onChange={(e) => setPrenom(e.target.value)} placeholder="Ex: Léa" />
+              </label>
+              <div style={{ height: 16 }} />
+            </>
+          )}
           <label>Email
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
@@ -84,7 +104,13 @@ function Login() {
 /* ---------------- Layout & Navigation ---------------- */
 function Layout({ session }) {
   const [activeTab, setActiveTab] = useState("Accueil");
-  const prenom = localStorage.getItem("prenom") || session.user.email.split('@')[0];
+  
+  // Extraction du prénom depuis les métadonnées Supabase
+  const meta = session?.user?.user_metadata || {};
+  const prenom = meta.prenom || session.user.email.split('@')[0];
+  
+  // Vérification de l'administrateur
+  const isAdmin = prenom.trim().toLowerCase() === "davesh";
 
   const NAV_ITEMS = [
     { id: "Accueil", icon: "🏠" },
@@ -124,7 +150,13 @@ function Layout({ session }) {
         <header className="topbar">
           <div className="breadcrumb">{activeTab}</div>
           <div className="user-menu">
-            <span className="user-name desktop-only">{prenom}</span>
+            {/* Clic sur le nom pour aller au profil */}
+            <button className="user-name desktop-only name-btn" onClick={() => setActiveTab("Profil")}>
+              {prenom} {isAdmin && "👑"}
+            </button>
+            <button className="logout-btn mobile-only" onClick={() => setActiveTab("Profil")} title="Profil">
+              👤
+            </button>
             <button className="logout-btn" onClick={() => supabase.auth.signOut()} title="Déconnexion">
               ⏻
             </button>
@@ -132,13 +164,13 @@ function Layout({ session }) {
         </header>
         
         <div className="scroll-area">
-          {activeTab === "Accueil" && <AccueilView prenom={prenom} />}
-          {activeTab === "Cours" && <CoursView session={session} />}
+          {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Profil" && <ProfilView session={session} prenomActuel={prenom} />}
+          {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
+          
+          {/* Vues administrables */}
           {["Planning", "Date importante", "Adresse mail important"].includes(activeTab) && (
-            <div className="placeholder-view">
-              <h2>{activeTab}</h2>
-              <p className="muted">Contenu en construction...</p>
-            </div>
+            <AdminPlaceholderView title={activeTab} isAdmin={isAdmin} />
           )}
         </div>
       </main>
@@ -160,12 +192,11 @@ function Layout({ session }) {
   );
 }
 
-/* ---------------- Vue Accueil (Dashboard) ---------------- */
-function AccueilView({ prenom }) {
+/* ---------------- Vues Secondaires ---------------- */
+function AccueilView({ prenom, isAdmin }) {
   return (
     <div className="accueil-view">
-      <h1 className="greeting">Bonjour,<br />{prenom}</h1>
-      
+      <h1 className="greeting">Bonjour,<br />{prenom} {isAdmin && <span title="Admin">👑</span>}</h1>
       <div className="dashboard-grid">
         <div className="dash-card primary-card">
           <h3>Vos tâches (1)</h3>
@@ -174,7 +205,6 @@ function AccueilView({ prenom }) {
             <p>Numéro de CVEC requis</p>
           </div>
         </div>
-        
         <div className="dash-card secondary-card">
           <div className="dash-card-header">
             <h3>Prochaine séance</h3>
@@ -191,11 +221,61 @@ function AccueilView({ prenom }) {
   );
 }
 
-/* ---------------- Vue Cours (Votre logique existante) ---------------- */
-function CoursView({ session }) {
+function ProfilView({ prenomActuel }) {
+  const [nvPrenom, setNvPrenom] = useState(prenomActuel);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function updateProfil(e) {
+    e.preventDefault();
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({
+      data: { prenom: nvPrenom.trim() }
+    });
+    if (error) setMsg("Erreur: " + error.message);
+    else setMsg("Profil mis à jour ! 👑 (Rechargez si besoin)");
+    setBusy(false);
+  }
+
+  return (
+    <div className="card" style={{ maxWidth: 500, margin: "0 auto" }}>
+      <h2>Mon Profil</h2>
+      <form onSubmit={updateProfil}>
+        <div className="row">
+          <label>Prénom affiché
+            <input required value={nvPrenom} onChange={e => setNvPrenom(e.target.value)} />
+          </label>
+        </div>
+        <button className="btn full" disabled={busy || !nvPrenom} style={{ marginTop: 20 }}>
+          {busy ? "Mise à jour..." : "Enregistrer"}
+        </button>
+        {msg && <p className="msg">{msg}</p>}
+      </form>
+    </div>
+  );
+}
+
+function AdminPlaceholderView({ title, isAdmin }) {
+  return (
+    <div className="placeholder-view">
+      <h2>{title}</h2>
+      {isAdmin ? (
+        <div className="admin-panel card" style={{ maxWidth: 600, margin: "24px auto", textAlign: "left" }}>
+          <h3 style={{ color: "var(--accent)", marginBottom: 12 }}>👑 Espace Administrateur</h3>
+          <p>Vous êtes connecté en tant que Davesh. Vous pouvez modifier les données de la section <strong>{title}</strong>.</p>
+          <button className="btn" style={{ marginTop: 16 }}>+ Ajouter / Modifier</button>
+        </div>
+      ) : (
+        <p className="muted" style={{ marginTop: 20 }}>Rien à afficher pour le moment. Seul l'administrateur peut modifier cette section.</p>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Vue Cours ---------------- */
+function CoursView({ session, prenom, isAdmin }) {
   const [cours, setCours] = useState([]);
-  const [matiere, setMatiere] = useState(MATIERES[0]);
-  const [auteur, setAuteur] = useState(localStorage.getItem("prenom") || "");
+  const [nomCours, setNomCours] = useState("");
   const [fichiers, setFichiers] = useState([]);
   const [drag, setDrag] = useState(false);
   const [msg, setMsg] = useState("");
@@ -207,17 +287,23 @@ function CoursView({ session }) {
       .from("cours")
       .select("*")
       .order("created_at", { ascending: false });
-    if (error) setMsg("Erreur : " + error.message);
+    if (error) console.error("Erreur de chargement", error);
     else setCours(data);
   }
+  
   useEffect(() => { charger(); }, []);
+
+  // Grouper dynamiquement par matière existante dans la DB
+  const matieresExistantes = useMemo(() => {
+    return [...new Set(cours.map(c => c.matiere))];
+  }, [cours]);
 
   const parMatiere = useMemo(() => {
     const m = {};
-    MATIERES.forEach((x) => (m[x] = []));
+    matieresExistantes.forEach((x) => (m[x] = []));
     cours.forEach((c) => (m[c.matiere] ||= []).push(c));
     return m;
-  }, [cours]);
+  }, [cours, matieresExistantes]);
 
   const ajouterFichiers = (list) => {
     const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
@@ -226,23 +312,27 @@ function CoursView({ session }) {
 
   async function deposer(e) {
     e.preventDefault();
-    if (!auteur.trim() || !fichiers.length) {
-      setMsg("Ajoute ton prénom et au moins un fichier.");
+    if (!nomCours.trim() || !fichiers.length) {
+      setMsg("Ajoute un nom de cours et au moins un fichier.");
       return;
     }
     setBusy(true);
     setMsg("");
-    localStorage.setItem("prenom", auteur.trim());
     try {
       for (const f of fichiers) {
         const safe = f.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const path = `${session.user.id}/${Date.now()}-${safe}`;
         const up = await supabase.storage.from("cours").upload(path, f);
         if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ matiere, auteur: auteur.trim(), fichier: path });
+        const ins = await supabase.from("cours").insert({ 
+          matiere: nomCours.trim(), 
+          auteur: prenom, 
+          fichier: path 
+        });
         if (ins.error) throw ins.error;
       }
       setFichiers([]);
+      setNomCours("");
       setMsg("Cours déposé ✨");
       charger();
     } catch (err) {
@@ -253,74 +343,86 @@ function CoursView({ session }) {
   }
 
   async function supprimer(c) {
-    if (!confirm("Supprimer ce cours ?")) return;
+    if (!confirm("Admin: Voulez-vous vraiment supprimer ce fichier ?")) return;
     await supabase.storage.from("cours").remove([c.fichier]);
     await supabase.from("cours").delete().eq("id", c.id);
     charger();
   }
 
+  async function editerNomMatiere(c) {
+    const nvNom = prompt("Admin: Entrez le nouveau nom pour ce cours", c.matiere);
+    if (nvNom && nvNom.trim() !== "" && nvNom !== c.matiere) {
+      await supabase.from("cours").update({ matiere: nvNom.trim() }).eq("id", c.id);
+      charger();
+    }
+  }
+
   async function genererPdf(m) {
-    setMsg(`Le PDF « ${m} » sera généré ici plus tard.`);
+    alert(`Téléchargement ou génération du PDF de la classe pour : ${m}`);
   }
 
   return (
     <div className="cours-view">
-      <section id="depot" className="card">
-        <h2>Déposer un cours</h2>
-        <form onSubmit={deposer}>
-          <div className="row">
-            <label>Ton prénom
-              <input value={auteur} onChange={(e) => setAuteur(e.target.value)} placeholder="Ex : Léa" />
-            </label>
-            <label>Matière
-              <select value={matiere} onChange={(e) => setMatiere(e.target.value)}>
-                {MATIERES.map((m) => <option key={m}>{m}</option>)}
-              </select>
-            </label>
+      
+      {/* Zone de dépôt réservée à l'Admin (Davesh) */}
+      {isAdmin && (
+        <section id="depot" className="card admin-panel-highlight">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h2>👑 Ajouter un cours</h2>
           </div>
+          <form onSubmit={deposer}>
+            <div className="row">
+              <label>Nom du cours (Matière)
+                <input value={nomCours} onChange={(e) => setNomCours(e.target.value)} placeholder="Ex : Base de données, Mathématiques..." />
+              </label>
+            </div>
 
-          <div
-            className={"drop" + (drag ? " on" : "")}
-            onClick={() => inputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}
-          >
-            <div style={{ fontSize: 32 }}>⬆️</div>
-            <strong>Glisse tes fichiers ici</strong>
-            <span>ou touche pour prendre une photo / choisir un fichier</span>
-            <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden
-              onChange={(e) => ajouterFichiers(e.target.files)} />
-          </div>
+            <div
+              className={"drop" + (drag ? " on" : "")}
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}
+            >
+              <div style={{ fontSize: 32 }}>⬆️</div>
+              <strong>Glisse tes fichiers ici</strong>
+              <span>ou touche pour choisir un fichier</span>
+              <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden
+                onChange={(e) => ajouterFichiers(e.target.files)} />
+            </div>
 
-          {fichiers.length > 0 && (
-            <ul className="files">
-              {fichiers.map((f, i) => (
-                <li key={i}>
-                  <span>{f.name}</span>
-                  <button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button>
-                </li>
-              ))}
-            </ul>
-          )}
+            {fichiers.length > 0 && (
+              <ul className="files">
+                {fichiers.map((f, i) => (
+                  <li key={i}>
+                    <span>{f.name}</span>
+                    <button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button>
+                  </li>
+                ))}
+              </ul>
+            )}
 
-          <button className="btn full" disabled={busy}>{busy ? "Envoi…" : "Envoyer"}</button>
-          {msg && <p className="msg">{msg}</p>}
-        </form>
-      </section>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi…" : "Créer le cours"}</button>
+            {msg && <p className="msg">{msg}</p>}
+          </form>
+        </section>
+      )}
 
+      {/* Affichage des cours (Pour tout le monde) */}
       <section>
-        <h2>Cours par matière</h2>
-        <div className="grid">
-          {MATIERES.map((m) => (
-            <div className="card" key={m}>
-              <div className="head">
-                <h3>{m}</h3>
-                <span className="count">{parMatiere[m].length}</span>
-              </div>
-              {parMatiere[m].length === 0 ? (
-                <p className="muted">Aucun cours pour l'instant.</p>
-              ) : (
+        <h2 style={{ marginBottom: 24 }}>Cours disponibles</h2>
+        {matieresExistantes.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 40 }}>
+            <p className="muted">Aucun cours n'a été publié pour le moment.</p>
+          </div>
+        ) : (
+          <div className="grid">
+            {matieresExistantes.map((m) => (
+              <div className="card" key={m}>
+                <div className="head">
+                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3>
+                  <span className="count">{parMatiere[m].length}</span>
+                </div>
                 <ul className="list">
                   {parMatiere[m].map((c) => (
                     <li key={c.id}>
@@ -329,21 +431,25 @@ function CoursView({ session }) {
                         <small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
                       </div>
                       <div className="right">
-                        <em className={c.statut === "transcrit" ? "ok" : "wait"}>{c.statut || 'En attente'}</em>
-                        {c.user_id === session.user.id && (
-                          <button className="x" title="Supprimer" onClick={() => supprimer(c)}>🗑</button>
+                        {/* Boutons réservés à l'admin */}
+                        {isAdmin && (
+                          <>
+                            <button className="action-btn" title="Modifier le nom" onClick={() => editerNomMatiere(c)}>✏️</button>
+                            <button className="action-btn x" title="Supprimer ce fichier" onClick={() => supprimer(c)}>🗑</button>
+                          </>
                         )}
+                        <em className={c.statut === "transcrit" ? "ok" : "wait"}>{c.statut || 'En ligne'}</em>
                       </div>
                     </li>
                   ))}
                 </ul>
-              )}
-              <button className="btn ghost full" disabled={!parMatiere[m].length} onClick={() => genererPdf(m)}>
-                📄 PDF de classe
-              </button>
-            </div>
-          ))}
-        </div>
+                <button className="btn ghost full" onClick={() => genererPdf(m)}>
+                  📄 Télécharger
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -387,97 +493,32 @@ a:hover { text-decoration: underline; }
 .auth-screen h1 { margin: 24px 0; font-size: 28px; }
 
 /* -- Layout Principal -- */
-.app-layout {
-  display: flex;
-  height: 100vh;
-  width: 100vw;
-}
+.app-layout { display: flex; height: 100vh; width: 100vw; }
 
-/* Sidebar Ordinateur */
-.sidebar {
-  width: 260px;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 24px 16px;
-}
-.logo-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 40px;
-  padding: 0 12px;
-}
+.sidebar { width: 260px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px 16px; }
+.logo-header { display: flex; align-items: center; gap: 12px; margin-bottom: 40px; padding: 0 12px; }
 .logo-icon { font-size: 24px; }
 .nav-menu { display: flex; flex-direction: column; gap: 6px; }
-.nav-link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: transparent;
-  border: none;
-  color: var(--txt-muted);
-  padding: 12px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 15px;
-  font-weight: 500;
-  text-align: left;
-  transition: all 0.2s;
-}
+.nav-link { display: flex; align-items: center; gap: 12px; background: transparent; border: none; color: var(--txt-muted); padding: 12px 16px; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 500; text-align: left; transition: all 0.2s; }
 .nav-link:hover { color: var(--txt-main); background: rgba(255,255,255,0.03); }
 .nav-link.active { color: var(--txt-main); background: rgba(255,255,255,0.08); }
-.nav-icon { font-size: 18px; }
 
-/* Contenu Principal */
-.main-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.topbar {
-  height: 70px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 32px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-app);
-}
+.main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar { height: 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid var(--border); background: var(--bg-app); }
 .breadcrumb { font-weight: 600; color: var(--txt-muted); }
 .user-menu { display: flex; align-items: center; gap: 16px; }
-.logout-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--txt-muted);
-  width: 36px; height: 36px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
+.name-btn { background: none; border: none; color: var(--txt-main); font-weight: 600; cursor: pointer; padding: 6px 12px; border-radius: 6px; transition: 0.2s; }
+.name-btn:hover { background: rgba(255,255,255,0.05); }
+.logout-btn { background: transparent; border: 1px solid var(--border); color: var(--txt-muted); width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .logout-btn:hover { color: var(--danger); border-color: var(--danger); }
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 32px;
-}
+.scroll-area { flex: 1; overflow-y: auto; padding: 32px; }
 
-/* -- Vues Spécifiques -- */
+/* -- Vues -- */
 .accueil-view { max-width: 1000px; margin: 0 auto; }
 .greeting { font-size: clamp(24px, 4vw, 32px); margin-bottom: 32px; line-height: 1.2; }
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 24px;
-}
+.dashboard-grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
 
-.dash-card {
-  border-radius: 16px;
-  padding: 24px;
-  border: 1px solid var(--border);
-}
+.dash-card { border-radius: 16px; padding: 24px; border: 1px solid var(--border); }
 .primary-card { background: var(--bg-card-blue); border-color: transparent; }
 .primary-card h3 { margin-bottom: 16px; font-size: 16px; }
 .task-item { background: rgba(255,255,255,0.1); padding: 16px; border-radius: 12px; display: flex; align-items: center; gap: 16px; }
@@ -488,12 +529,12 @@ a:hover { text-decoration: underline; }
 .link-muted { color: var(--txt-muted); font-size: 14px; text-decoration: underline; }
 .empty-state { text-align: center; padding: 32px 0; }
 .empty-icon { font-size: 32px; margin-bottom: 16px; opacity: 0.5; }
-.empty-state h4 { margin-bottom: 8px; }
 
 .cours-view { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
 .placeholder-view { text-align: center; padding: 64px 20px; }
+.admin-panel-highlight { border: 1px solid var(--accent) !important; background: linear-gradient(180deg, rgba(37,99,235,0.05) 0%, rgba(37,99,235,0) 100%); }
 
-/* -- Composants UI -- */
+/* -- UI -- */
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
 .row { display: grid; gap: 16px; grid-template-columns: 1fr; }
 label { display: block; font-size: 14px; font-weight: 500; color: var(--txt-muted); margin-bottom: 8px;}
@@ -502,7 +543,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 
 .btn { display: inline-block; background: var(--accent); color: #fff; border: 0; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 15px; cursor: pointer; transition: 0.2s;}
 .btn:hover:not(:disabled) { background: var(--accent-hover); }
-.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--txt-main); }
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--txt-main); margin-top: 16px;}
 .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
 .btn.full { width: 100%; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -516,45 +557,29 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .files button { background: none; border: 0; color: var(--danger); cursor: pointer; }
 
 .grid { display: grid; gap: 20px; grid-template-columns: 1fr; }
-.head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 12px; gap: 12px; }
 .count { background: rgba(255,255,255,0.1); border-radius: 20px; padding: 2px 10px; font-size: 12px; }
 .muted { color: var(--txt-muted); }
 .msg { margin-top: 16px; font-size: 14px; color: var(--accent); text-align: center; }
 
-.list { list-style: none; display: grid; gap: 12px; margin-bottom: 20px; }
+.list { list-style: none; display: grid; gap: 12px; margin-bottom: 12px; }
 .list li { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.02); border-radius: 8px; }
 .list small { display: block; color: var(--txt-muted); font-size: 12px; margin-top: 4px; }
 .list em { font-style: normal; font-size: 12px; padding: 4px 10px; border-radius: 20px; }
 .ok { background: rgba(34,197,94,0.15); color: #4ade80; }
-.wait { background: rgba(245,158,11,0.15); color: #fbbf24; }
-.right { display: flex; align-items: center; gap: 12px; }
-.x { background: none; border: 0; cursor: pointer; color: var(--txt-muted); }
+.wait { background: rgba(255,255,255,0.1); color: var(--txt-muted); }
+.right { display: flex; align-items: center; gap: 8px; }
+.action-btn { background: none; border: 0; cursor: pointer; filter: grayscale(1); opacity: 0.7; font-size: 14px; transition: 0.2s;}
+.action-btn:hover { filter: grayscale(0); opacity: 1; transform: scale(1.1); }
 .x:hover { color: var(--danger); }
 
 /* -- Mobile Bottom Bar -- */
-.bottom-bar {
-  display: none;
-  background: var(--bg-sidebar);
-  border-top: 1px solid var(--border);
-  height: 70px;
-}
-.bottom-link {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  background: transparent;
-  border: none;
-  color: var(--txt-muted);
-  cursor: pointer;
-}
+.bottom-bar { display: none; background: var(--bg-sidebar); border-top: 1px solid var(--border); height: 70px; }
+.bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
 .bottom-link.active { color: var(--accent); }
 .bottom-link .nav-icon { font-size: 20px; }
 .bottom-link .nav-label { font-size: 10px; font-weight: 500; }
 
-/* -- Responsive Rules -- */
 @media (max-width: 768px) {
   .desktop-only { display: none !important; }
   .bottom-bar.mobile-only { display: flex; }
