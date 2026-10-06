@@ -144,6 +144,31 @@ function useCalendar() {
   return { events, loading, erreur };
 }
 
+/* ---------------- Cours ajoutés à la main (Supabase) ---------------- */
+function useManuels() {
+  const [rows, setRows] = useState([]);
+  const charger = async () => {
+    const { data } = await supabase.from("cours_manuels").select("*").order("debut", { ascending: true });
+    if (data) setRows(data);
+  };
+  useEffect(() => { charger(); }, []);
+  return { rows, charger };
+}
+
+// agenda de l'école + cours ajoutés à la main, mélangés
+function usePlanning() {
+  const ics = useCalendar();
+  const man = useManuels();
+  const events = useMemo(() => {
+    const manuels = man.rows.map((r) => ({
+      id: r.id, manuel: true, matiere: r.titre, salle: r.salle, description: r.description,
+      debut: new Date(r.debut), fin: new Date(r.fin),
+    }));
+    return [...ics.events, ...manuels].sort((a, b) => a.debut - b.debut);
+  }, [ics.events, man.rows]);
+  return { events, loading: ics.loading, erreur: ics.erreur, recharger: man.charger };
+}
+
 /* ---------------- Icônes ---------------- */
 const ICON_PATHS = {
   home: "M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z",
@@ -220,7 +245,7 @@ function Layout({ session }) {
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
           {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
           {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
-          {activeTab === "Planning" && <PlanningView />}
+          {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
           {activeTab === "Date importante" && <AdminPlaceholderView title={activeTab} isAdmin={isAdmin} />}
         </div>
       </main>
@@ -243,7 +268,7 @@ function Layout({ session }) {
 
 /* ---------------- Vue Accueil ---------------- */
 function AccueilView({ prenom, isAdmin, setActiveTab }) {
-  const { events, loading } = useCalendar();
+  const { events, loading } = usePlanning();
   const now = new Date();
   const prochaines = events.filter((e) => (e.fin || e.debut) > now).slice(0, 3);
 
@@ -393,11 +418,75 @@ function placerCours(evts, debutH) {
   return out;
 }
 
-function PlanningView() {
-  const { events, loading, erreur } = useCalendar();
+// Formulaire : ajouter / modifier un cours à la main
+const dateLocale = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const heureLocale = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+function CoursForm({ initial, onClose, onSaved }) {
+  const [f, setF] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const set = (k, v) => setF({ ...f, [k]: v });
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.titre.trim() || !f.date || !f.debut || !f.fin) return setMsg("Remplis le nom, la date et les heures.");
+    const d0 = new Date(`${f.date}T${f.debut}`);
+    const e0 = new Date(`${f.date}T${f.fin}`);
+    if (e0 <= d0) return setMsg("L'heure de fin doit être après le début.");
+
+    setBusy(true); setMsg("");
+    const base = { titre: f.titre.trim(), salle: f.salle.trim(), description: f.description.trim() };
+    let error;
+    if (f.id) {
+      ({ error } = await supabase.from("cours_manuels").update({ ...base, debut: d0.toISOString(), fin: e0.toISOString() }).eq("id", f.id));
+    } else {
+      const n = Math.max(1, Math.min(40, parseInt(f.repeter) || 1));
+      const rows = [];
+      for (let i = 0; i < n; i++) {
+        const a = new Date(d0), b = new Date(e0);
+        a.setDate(a.getDate() + 7 * i); b.setDate(b.getDate() + 7 * i);
+        rows.push({ ...base, debut: a.toISOString(), fin: b.toISOString() });
+      }
+      ({ error } = await supabase.from("cours_manuels").insert(rows));
+    }
+    setBusy(false);
+    if (error) return setMsg("Erreur : " + error.message);
+    onSaved();
+  }
+
+  return (
+    <div className="modal" onClick={onClose}>
+      <form className="modal-card" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="modal-bar" style={{ background: "var(--accent)" }} />
+        <h3>{f.id ? "Modifier le cours" : "Ajouter un cours"}</h3>
+        <label>Nom du cours<input value={f.titre} onChange={(e) => set("titre", e.target.value)} placeholder="Ex : Statistiques" autoFocus /></label>
+        <label>Date<input type="date" value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
+        <div className="form-2">
+          <label>Début<input type="time" value={f.debut} onChange={(e) => set("debut", e.target.value)} /></label>
+          <label>Fin<input type="time" value={f.fin} onChange={(e) => set("fin", e.target.value)} /></label>
+        </div>
+        <label>Salle<input value={f.salle} onChange={(e) => set("salle", e.target.value)} placeholder="Ex : A204" /></label>
+        <label>Notes (prof, groupe…)<input value={f.description} onChange={(e) => set("description", e.target.value)} /></label>
+        {!f.id && (
+          <label>Répéter chaque semaine pendant (semaines)
+            <input type="number" min="1" max="40" value={f.repeter} onChange={(e) => set("repeter", e.target.value)} />
+          </label>
+        )}
+        <button className="btn full" disabled={busy} style={{ marginTop: 14 }}>{busy ? "Enregistrement…" : "Enregistrer"}</button>
+        <button type="button" className="btn ghost full" style={{ marginTop: 8 }} onClick={onClose}>Annuler</button>
+        {msg && <p className="msg">{msg}</p>}
+      </form>
+    </div>
+  );
+}
+
+function PlanningView({ isAdmin }) {
+  const { events, loading, erreur, recharger } = usePlanning();
   const mobile = useMedia("(max-width: 768px)");
   const [debut, setDebut] = useState(lundiDe(new Date()));
   const [choisi, setChoisi] = useState(null);       // cours ouvert (fenêtre)
+  const [form, setForm] = useState(null);           // formulaire ajout / modification
   const [jourMobile, setJourMobile] = useState(() => (new Date().getDay() + 6) % 7);
   const [maintenant, setMaintenant] = useState(new Date());
 
@@ -435,6 +524,22 @@ function PlanningView() {
   const decale = (n) => setDebut(new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + n * 7));
   const aujourdhui = () => { setDebut(lundiDe(new Date())); setJourMobile((new Date().getDay() + 6) % 7); };
   const semaineVide = jours.every((j) => j.evts.length === 0);
+
+  function nouveauForm(lundi0) {
+    const auj = new Date();
+    const d = auj >= lundi0 && auj < new Date(lundi0.getTime() + 7 * 86400000) ? auj : lundi0;
+    return { titre: "", date: dateLocale(d), debut: "08:00", fin: "10:00", salle: "", description: "", repeter: 1 };
+  }
+  function formDepuis(e) {
+    return { id: e.id, titre: e.matiere || "", date: dateLocale(e.debut), debut: heureLocale(e.debut), fin: heureLocale(e.fin), salle: e.salle || "", description: e.description || "", repeter: 1 };
+  }
+  async function supprimerManuel(e) {
+    if (!confirm("Supprimer ce cours ?")) return;
+    const { error } = await supabase.from("cours_manuels").delete().eq("id", e.id);
+    if (error) return alert("Erreur : " + error.message);
+    setChoisi(null);
+    recharger();
+  }
   const cols = `repeat(${affiches.length}, minmax(0, 1fr))`;
 
   return (
@@ -444,6 +549,9 @@ function PlanningView() {
           <button className="pill-btn" onClick={aujourdhui}>Aujourd'hui</button>
           <button className="round-btn" onClick={() => decale(-1)} aria-label="Semaine précédente">‹</button>
           <button className="round-btn" onClick={() => decale(1)} aria-label="Semaine suivante">›</button>
+          {isAdmin && (
+            <button className="pill-btn primary" onClick={() => setForm(nouveauForm(debut))}>+ Ajouter</button>
+          )}
         </div>
         <h2 className="cal-title">{titre}</h2>
         <span className={"sync " + (erreur ? "bad" : "ok")}>
@@ -533,9 +641,20 @@ function PlanningView() {
             </p>
             {choisi.salle && <p className="modal-room">📍 {choisi.salle}</p>}
             {choisi.description && <p className="muted" style={{ fontSize: 13, marginTop: 10, whiteSpace: "pre-wrap" }}>{choisi.description}</p>}
-            <button className="btn full" style={{ marginTop: 18 }} onClick={() => setChoisi(null)}>Fermer</button>
+            {choisi.manuel && <p className="tag-manuel">✎ Ajouté à la main</p>}
+            {isAdmin && choisi.manuel && (
+              <div className="form-2" style={{ marginTop: 16 }}>
+                <button className="btn ghost full" style={{ marginTop: 0 }} onClick={() => { setForm(formDepuis(choisi)); setChoisi(null); }}>Modifier</button>
+                <button className="btn ghost full danger" style={{ marginTop: 0 }} onClick={() => supprimerManuel(choisi)}>Supprimer</button>
+              </div>
+            )}
+            <button className="btn full" style={{ marginTop: 14 }} onClick={() => setChoisi(null)}>Fermer</button>
           </div>
         </div>
+      )}
+
+      {form && (
+        <CoursForm initial={form} onClose={() => setForm(null)} onSaved={() => { setForm(null); recharger(); }} />
       )}
     </div>
   );
@@ -885,7 +1004,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 /* ====== Planning : grille de la semaine ====== */
 .planning-view { max-width: 1150px; margin: 0 auto; }
 .cal-toolbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin-bottom: 18px; }
-.cal-nav { display: flex; align-items: center; gap: 8px; }
+.cal-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pill-btn { background: transparent; border: 1px solid var(--border); border-radius: 99px; padding: 9px 20px; font-size: 14px; font-weight: 500; cursor: pointer; transition: .15s; }
 .pill-btn:hover { background: rgba(255,255,255,.06); }
 .round-btn { width: 36px; height: 36px; border-radius: 50%; background: transparent; border: 0; color: var(--txt-muted); font-size: 24px; line-height: 1; cursor: pointer; }
@@ -923,10 +1042,16 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .chip.sel { background: rgba(47,107,255,.18); color: #fff; }
 
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
-.modal-card { position: relative; background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 26px; width: 100%; max-width: 380px; overflow: hidden; }
+.modal-card { max-height: 92vh; overflow-y: auto; position: relative; background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 26px; width: 100%; max-width: 380px; overflow: hidden; }
 .modal-bar { position: absolute; left: 0; top: 0; right: 0; height: 4px; }
 .modal-card h3 { font-size: 19px; margin: 6px 0 8px; }
 .modal-room { margin-top: 10px; font-weight: 600; }
+.modal-card label { margin-top: 12px; margin-bottom: 0; }
+.form-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pill-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pill-btn.primary:hover { background: var(--accent-hover); }
+.tag-manuel { margin-top: 12px; font-size: 12px; color: var(--accent); }
+.btn.danger { color: var(--danger); }
 
 .bottom-bar { display: none; background: var(--bg-sidebar); border-top: 1px solid var(--border); height: 68px; padding-bottom: env(safe-area-inset-bottom); }
 .bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
