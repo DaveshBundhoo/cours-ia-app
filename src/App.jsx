@@ -332,3 +332,4 @@ footer{text-align:center;color:var(--mut);padding:24px;font-size:14px}
 }
 @media(min-width:980px){.grid{grid-template-columns:repeat(3,1fr)}}
 `;
+
