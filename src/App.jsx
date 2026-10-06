@@ -150,7 +150,6 @@ function Layout({ session }) {
         <header className="topbar">
           <div className="breadcrumb">{activeTab}</div>
           <div className="user-menu">
-            {/* Clic sur le nom pour aller au profil */}
             <button className="user-name desktop-only name-btn" onClick={() => setActiveTab("Profil")}>
               {prenom} {isAdmin && "👑"}
             </button>
@@ -165,11 +164,12 @@ function Layout({ session }) {
         
         <div className="scroll-area">
           {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} />}
-          {activeTab === "Profil" && <ProfilView session={session} prenomActuel={prenom} />}
+          {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
           {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
           
-          {/* Vues administrables */}
-          {["Planning", "Date importante", "Adresse mail important"].includes(activeTab) && (
+          {/* Vues en construction */}
+          {["Planning", "Date importante"].includes(activeTab) && (
             <AdminPlaceholderView title={activeTab} isAdmin={isAdmin} />
           )}
         </div>
@@ -233,7 +233,7 @@ function ProfilView({ prenomActuel }) {
       data: { prenom: nvPrenom.trim() }
     });
     if (error) setMsg("Erreur: " + error.message);
-    else setMsg("Profil mis à jour ! 👑 (Rechargez si besoin)");
+    else setMsg("Profil mis à jour ! 👑 (Rechargez la page si besoin)");
     setBusy(false);
   }
 
@@ -262,12 +262,130 @@ function AdminPlaceholderView({ title, isAdmin }) {
       {isAdmin ? (
         <div className="admin-panel card" style={{ maxWidth: 600, margin: "24px auto", textAlign: "left" }}>
           <h3 style={{ color: "var(--accent)", marginBottom: 12 }}>👑 Espace Administrateur</h3>
-          <p>Vous êtes connecté en tant que Davesh. Vous pouvez modifier les données de la section <strong>{title}</strong>.</p>
-          <button className="btn" style={{ marginTop: 16 }}>+ Ajouter / Modifier</button>
+          <p>Vous êtes connecté en tant que Davesh. Vous pourrez bientôt modifier les données de la section <strong>{title}</strong>.</p>
         </div>
       ) : (
         <p className="muted" style={{ marginTop: 20 }}>Rien à afficher pour le moment. Seul l'administrateur peut modifier cette section.</p>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Vue Annuaire (NOUVEAU) ---------------- */
+function AnnuaireView({ isAdmin }) {
+  const [contacts, setContacts] = useState([]);
+  const [recherche, setRecherche] = useState("");
+  const [nom, setNom] = useState("");
+  const [role, setRole] = useState("");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function chargerAnnuaire() {
+    const { data, error } = await supabase
+      .from("annuaire")
+      .select("*")
+      .order("nom", { ascending: true });
+    if (error) console.error("Erreur annuaire:", error);
+    else setContacts(data);
+  }
+
+  useEffect(() => { chargerAnnuaire(); }, []);
+
+  async function ajouterContact(e) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+    const { error } = await supabase
+      .from("annuaire")
+      .insert({ nom: nom.trim(), role: role.trim(), email: email.trim() });
+    
+    if (error) {
+      setMsg("Erreur : " + error.message);
+    } else {
+      setMsg("Contact ajouté !");
+      setNom(""); setRole(""); setEmail("");
+      chargerAnnuaire();
+    }
+    setBusy(false);
+  }
+
+  async function supprimerContact(id) {
+    if (!confirm("Admin: Supprimer ce contact ?")) return;
+    await supabase.from("annuaire").delete().eq("id", id);
+    chargerAnnuaire();
+  }
+
+  const contactsFiltres = contacts.filter(c => 
+    c.nom.toLowerCase().includes(recherche.toLowerCase()) || 
+    (c.role && c.role.toLowerCase().includes(recherche.toLowerCase()))
+  );
+
+  return (
+    <div className="annuaire-view" style={{ maxWidth: 800, margin: "0 auto" }}>
+      
+      {isAdmin && (
+        <section className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
+          <h2 style={{ marginBottom: 16 }}>👑 Ajouter un contact</h2>
+          <form onSubmit={ajouterContact}>
+            <div className="row">
+              <label>Nom complet
+                <input required value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex : M. Dupont" />
+              </label>
+              <label>Rôle / Fonction
+                <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Ex : Responsable scolarité" />
+              </label>
+              <label>Adresse Email
+                <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Ex : dupont@ecole.fr" />
+              </label>
+            </div>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>
+              {busy ? "Ajout..." : "Ajouter à l'annuaire"}
+            </button>
+            {msg && <p className="msg">{msg}</p>}
+          </form>
+        </section>
+      )}
+
+      <section>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
+          <h2 style={{ margin: 0 }}>Annuaire de l'école</h2>
+          <input 
+            type="text" 
+            placeholder="🔍 Rechercher un nom ou un rôle..." 
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            style={{ maxWidth: 300, margin: 0 }}
+          />
+        </div>
+
+        {contacts.length === 0 ? (
+          <div className="card empty-state">
+            <p className="muted">L'annuaire est vide pour le moment.</p>
+          </div>
+        ) : (
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+            {contactsFiltres.map(c => (
+              <div className="card" key={c.id} style={{ padding: "20px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <h3 style={{ fontSize: 18, marginBottom: 4 }}>{c.nom}</h3>
+                    <span className="muted" style={{ fontSize: 14 }}>{c.role || "Non précisé"}</span>
+                  </div>
+                  {isAdmin && (
+                    <button className="action-btn x" onClick={() => supprimerContact(c.id)}>🗑</button>
+                  )}
+                </div>
+                <div style={{ marginTop: 16 }}>
+                  <a href={`mailto:${c.email}`} className="btn ghost" style={{ padding: "8px 16px", fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    ✉️ Envoyer un mail
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -293,7 +411,6 @@ function CoursView({ session, prenom, isAdmin }) {
   
   useEffect(() => { charger(); }, []);
 
-  // Grouper dynamiquement par matière existante dans la DB
   const matieresExistantes = useMemo(() => {
     return [...new Set(cours.map(c => c.matiere))];
   }, [cours]);
@@ -362,11 +479,10 @@ function CoursView({ session, prenom, isAdmin }) {
   }
 
   return (
-    <div className="cours-view">
+    <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
       
-      {/* Zone de dépôt réservée à l'Admin (Davesh) */}
       {isAdmin && (
-        <section id="depot" className="card admin-panel-highlight">
+        <section id="depot" className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <h2>👑 Ajouter un cours</h2>
           </div>
@@ -408,11 +524,10 @@ function CoursView({ session, prenom, isAdmin }) {
         </section>
       )}
 
-      {/* Affichage des cours (Pour tout le monde) */}
       <section>
         <h2 style={{ marginBottom: 24 }}>Cours disponibles</h2>
         {matieresExistantes.length === 0 ? (
-          <div className="card" style={{ textAlign: "center", padding: 40 }}>
+          <div className="card empty-state">
             <p className="muted">Aucun cours n'a été publié pour le moment.</p>
           </div>
         ) : (
@@ -431,7 +546,6 @@ function CoursView({ session, prenom, isAdmin }) {
                         <small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
                       </div>
                       <div className="right">
-                        {/* Boutons réservés à l'admin */}
                         {isAdmin && (
                           <>
                             <button className="action-btn" title="Modifier le nom" onClick={() => editerNomMatiere(c)}>✏️</button>
@@ -471,28 +585,13 @@ const css = `
   --danger: #EF4444;
 }
 
-body {
-  font-family: system-ui, -apple-system, sans-serif;
-  background: var(--bg-app);
-  color: var(--txt-main);
-  line-height: 1.5;
-  overflow: hidden;
-}
-
+body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg-app); color: var(--txt-main); line-height: 1.5; overflow: hidden; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* -- Authentification -- */
-.auth-screen {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 24px;
-}
+.auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
 .auth-screen h1 { margin: 24px 0; font-size: 28px; }
 
-/* -- Layout Principal -- */
 .app-layout { display: flex; height: 100vh; width: 100vw; }
 
 .sidebar { width: 260px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px 16px; }
@@ -513,7 +612,6 @@ a:hover { text-decoration: underline; }
 .logout-btn:hover { color: var(--danger); border-color: var(--danger); }
 .scroll-area { flex: 1; overflow-y: auto; padding: 32px; }
 
-/* -- Vues -- */
 .accueil-view { max-width: 1000px; margin: 0 auto; }
 .greeting { font-size: clamp(24px, 4vw, 32px); margin-bottom: 32px; line-height: 1.2; }
 .dashboard-grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
@@ -527,21 +625,19 @@ a:hover { text-decoration: underline; }
 .secondary-card { background: var(--bg-card); }
 .dash-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; }
 .link-muted { color: var(--txt-muted); font-size: 14px; text-decoration: underline; }
-.empty-state { text-align: center; padding: 32px 0; }
-.empty-icon { font-size: 32px; margin-bottom: 16px; opacity: 0.5; }
 
-.cours-view { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
+.empty-state { text-align: center; padding: 40px 20px; }
+.empty-icon { font-size: 32px; margin-bottom: 16px; opacity: 0.5; }
 .placeholder-view { text-align: center; padding: 64px 20px; }
 .admin-panel-highlight { border: 1px solid var(--accent) !important; background: linear-gradient(180deg, rgba(37,99,235,0.05) 0%, rgba(37,99,235,0) 100%); }
 
-/* -- UI -- */
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
 .row { display: grid; gap: 16px; grid-template-columns: 1fr; }
 label { display: block; font-size: 14px; font-weight: 500; color: var(--txt-muted); margin-bottom: 8px;}
 input, select { width: 100%; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-app); color: var(--txt-main); font-size: 15px; margin-top: 6px;}
 input:focus, select:focus { outline: none; border-color: var(--accent); }
 
-.btn { display: inline-block; background: var(--accent); color: #fff; border: 0; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 15px; cursor: pointer; transition: 0.2s;}
+.btn { display: inline-flex; align-items: center; justify-content: center; background: var(--accent); color: #fff; border: 0; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 15px; cursor: pointer; transition: 0.2s;}
 .btn:hover:not(:disabled) { background: var(--accent-hover); }
 .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--txt-main); margin-top: 16px;}
 .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
@@ -573,7 +669,6 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .action-btn:hover { filter: grayscale(0); opacity: 1; transform: scale(1.1); }
 .x:hover { color: var(--danger); }
 
-/* -- Mobile Bottom Bar -- */
 .bottom-bar { display: none; background: var(--bg-sidebar); border-top: 1px solid var(--border); height: 70px; }
 .bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
 .bottom-link.active { color: var(--accent); }
