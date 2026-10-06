@@ -105,11 +105,8 @@ function Login() {
 function Layout({ session }) {
   const [activeTab, setActiveTab] = useState("Accueil");
   
-  // Extraction du prénom depuis les métadonnées Supabase
   const meta = session?.user?.user_metadata || {};
   const prenom = meta.prenom || session.user.email.split('@')[0];
-  
-  // Vérification de l'administrateur
   const isAdmin = prenom.trim().toLowerCase() === "davesh";
 
   const NAV_ITEMS = [
@@ -122,7 +119,6 @@ function Layout({ session }) {
 
   return (
     <div className="app-layout">
-      {/* Barre latérale (Ordinateur) */}
       <aside className="sidebar desktop-only">
         <div className="logo-header">
           <span className="logo-icon">🚀</span>
@@ -145,7 +141,6 @@ function Layout({ session }) {
         </nav>
       </aside>
 
-      {/* Contenu principal */}
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumb">{activeTab}</div>
@@ -163,19 +158,18 @@ function Layout({ session }) {
         </header>
         
         <div className="scroll-area">
-          {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} setActiveTab={setActiveTab} />}
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
           {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
           {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
+          {activeTab === "Planning" && <PlanningView />}
           
-          {/* Vues en construction */}
-          {["Planning", "Date importante"].includes(activeTab) && (
+          {["Date importante"].includes(activeTab) && (
             <AdminPlaceholderView title={activeTab} isAdmin={isAdmin} />
           )}
         </div>
       </main>
 
-      {/* Barre de navigation (Téléphone) */}
       <nav className="bottom-bar mobile-only">
         {NAV_ITEMS.map((item) => (
           <button
@@ -192,8 +186,8 @@ function Layout({ session }) {
   );
 }
 
-/* ---------------- Vues Secondaires ---------------- */
-function AccueilView({ prenom, isAdmin }) {
+/* ---------------- Vue Accueil ---------------- */
+function AccueilView({ prenom, isAdmin, setActiveTab }) {
   return (
     <div className="accueil-view">
       <h1 className="greeting">Bonjour,<br />{prenom} {isAdmin && <span title="Admin">👑</span>}</h1>
@@ -207,13 +201,11 @@ function AccueilView({ prenom, isAdmin }) {
         </div>
         <div className="dash-card secondary-card">
           <div className="dash-card-header">
-            <h3>Prochaine séance</h3>
-            <a href="#" className="link-muted">Voir tout</a>
+            <h3>Prochaines séances</h3>
+            <button onClick={() => setActiveTab("Planning")} className="link-btn link-muted">Voir tout</button>
           </div>
-          <div className="empty-state">
-            <div className="empty-icon">⏳</div>
-            <h4>Rien à voir ici.</h4>
-            <p className="muted">Vous n'avez rien de planifié pour les 7 prochains jours.</p>
+          <div className="empty-state" style={{ padding: '16px 0' }}>
+            <p className="muted">Consultez l'onglet Planning pour voir votre emploi du temps synchronisé.</p>
           </div>
         </div>
       </div>
@@ -221,6 +213,7 @@ function AccueilView({ prenom, isAdmin }) {
   );
 }
 
+/* ---------------- Vues Profil & Admin Placeholder ---------------- */
 function ProfilView({ prenomActuel }) {
   const [nvPrenom, setNvPrenom] = useState(prenomActuel);
   const [msg, setMsg] = useState("");
@@ -229,9 +222,7 @@ function ProfilView({ prenomActuel }) {
   async function updateProfil(e) {
     e.preventDefault();
     setBusy(true);
-    const { error } = await supabase.auth.updateUser({
-      data: { prenom: nvPrenom.trim() }
-    });
+    const { error } = await supabase.auth.updateUser({ data: { prenom: nvPrenom.trim() } });
     if (error) setMsg("Erreur: " + error.message);
     else setMsg("Profil mis à jour ! 👑 (Rechargez la page si besoin)");
     setBusy(false);
@@ -262,16 +253,160 @@ function AdminPlaceholderView({ title, isAdmin }) {
       {isAdmin ? (
         <div className="admin-panel card" style={{ maxWidth: 600, margin: "24px auto", textAlign: "left" }}>
           <h3 style={{ color: "var(--accent)", marginBottom: 12 }}>👑 Espace Administrateur</h3>
-          <p>Vous êtes connecté en tant que Davesh. Vous pourrez bientôt modifier les données de la section <strong>{title}</strong>.</p>
+          <p>Vous êtes connecté en tant que Davesh. Vous pourrez bientôt modifier cette section.</p>
         </div>
       ) : (
-        <p className="muted" style={{ marginTop: 20 }}>Rien à afficher pour le moment. Seul l'administrateur peut modifier cette section.</p>
+        <p className="muted" style={{ marginTop: 20 }}>Rien à afficher pour le moment.</p>
       )}
     </div>
   );
 }
 
-/* ---------------- Vue Annuaire (NOUVEAU) ---------------- */
+/* ---------------- Vue PLANNING (Auto-synchronisé via ICS) ---------------- */
+function PlanningView() {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState("");
+
+  useEffect(() => {
+    async function chargerCalendrier() {
+      try {
+        const icsUrl = "https://cloud.timeedit.net/fr_gge/web/public/s.ics?i=6Z9Q0Q6n5Z5aQu988632YoyZZQ0Q55";
+        // Utilisation d'un proxy pour éviter l'erreur CORS bloquant la lecture du calendrier
+        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(icsUrl)}`;
+        
+        const res = await fetch(proxyUrl);
+        const data = await res.json();
+        
+        if (data.contents) {
+          const parsedEvents = parseICS(data.contents);
+          
+          // Garder uniquement les événements à partir d'aujourd'hui
+          const aujourdhui = new Date();
+          aujourdhui.setHours(0, 0, 0, 0);
+          
+          const aVenir = parsedEvents.filter(e => e.fin >= aujourdhui);
+          setEvents(aVenir);
+        } else {
+          setErreur("Impossible de récupérer les données du calendrier.");
+        }
+      } catch (err) {
+        setErreur("Erreur de connexion au calendrier.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    chargerCalendrier();
+  }, []);
+
+  // Grouper les événements par date
+  const eventsParJour = useMemo(() => {
+    const groupes = {};
+    events.forEach(e => {
+      const dateStr = e.debut.toLocaleDateString("fr-FR", { weekday: 'long', day: 'numeric', month: 'long' });
+      // Majuscule sur la première lettre du jour
+      const datePropre = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
+      if (!groupes[datePropre]) groupes[datePropre] = [];
+      groupes[datePropre].push(e);
+    });
+    return groupes;
+  }, [events]);
+
+  if (loading) return <div className="placeholder-view"><p>⏳ Synchronisation du planning en cours...</p></div>;
+  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)" }}>{erreur}</p></div>;
+  if (events.length === 0) return <div className="placeholder-view"><p className="muted">Aucun cours à venir trouvé dans le calendrier.</p></div>;
+
+  return (
+    <div className="planning-view" style={{ maxWidth: 800, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <h2 style={{ margin: 0 }}>Emploi du temps</h2>
+        <span className="badge">🔄 Synchronisé</span>
+      </div>
+
+      <div className="planning-list">
+        {Object.entries(eventsParJour).map(([jour, coursDuJour]) => (
+          <div key={jour} style={{ marginBottom: 32 }}>
+            <h3 style={{ fontSize: 16, color: "var(--txt-muted)", marginBottom: 12, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+              {jour}
+            </h3>
+            <div className="grid">
+              {coursDuJour.map((cours, idx) => (
+                <div className="card" key={idx} style={{ padding: 16, borderLeft: "4px solid var(--accent)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                    <div>
+                      <h4 style={{ fontSize: 16, marginBottom: 4 }}>{cours.matiere}</h4>
+                      <div className="muted" style={{ fontSize: 14 }}>
+                        {cours.debut.toLocaleTimeString("fr-FR", {hour: '2-digit', minute:'2-digit'})} 
+                        {' - '} 
+                        {cours.fin.toLocaleTimeString("fr-FR", {hour: '2-digit', minute:'2-digit'})}
+                      </div>
+                    </div>
+                    {cours.salle && (
+                      <div style={{ background: "var(--bg-card-blue)", color: "#fff", padding: "6px 12px", borderRadius: 8, fontWeight: "bold", fontSize: 14 }}>
+                        📍 {cours.salle}
+                      </div>
+                    )}
+                  </div>
+                  {cours.description && (
+                    <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{cours.description.replace(/\\n/g, ', ')}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Fonction utilitaire pour décoder le format ICS (iCalendar)
+function parseICS(icsText) {
+  // Gérer les lignes coupées (TimeEdit fait parfois ça)
+  const unfolded = icsText.replace(/\r\n[ \t]/g, '');
+  const lines = unfolded.split(/\r\n|\n|\r/);
+  const events = [];
+  let currentEvent = null;
+
+  lines.forEach(line => {
+    if (line === 'BEGIN:VEVENT') {
+      currentEvent = {};
+    } else if (line === 'END:VEVENT') {
+      if (currentEvent && currentEvent.debut) events.push(currentEvent);
+      currentEvent = null;
+    } else if (currentEvent) {
+      const match = line.match(/^([^:]+):(.*)$/);
+      if (match) {
+        const [, fullKey, value] = match;
+        const key = fullKey.split(';')[0]; // Ignorer les attributs comme TZID
+        
+        if (key === 'SUMMARY') currentEvent.matiere = value;
+        if (key === 'LOCATION') currentEvent.salle = value;
+        if (key === 'DESCRIPTION') currentEvent.description = value;
+        if (key === 'DTSTART') currentEvent.debut = parseICSDate(value);
+        if (key === 'DTEND') currentEvent.fin = parseICSDate(value);
+      }
+    }
+  });
+  return events.sort((a, b) => a.debut - b.debut);
+}
+
+// Transforme la date ICS (ex: 20241007T083000) en objet Date Javascript
+function parseICSDate(icsDateStr) {
+  const match = icsDateStr.match(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (match) {
+    const [, y, m, d, h, min, s] = match;
+    if (icsDateStr.endsWith('Z')) {
+      return new Date(Date.UTC(y, m - 1, d, h, min, s));
+    } else {
+      return new Date(y, m - 1, d, h, min, s);
+    }
+  }
+  return new Date();
+}
+
+
+/* ---------------- Vue Annuaire ---------------- */
 function AnnuaireView({ isAdmin }) {
   const [contacts, setContacts] = useState([]);
   const [recherche, setRecherche] = useState("");
@@ -282,12 +417,8 @@ function AnnuaireView({ isAdmin }) {
   const [msg, setMsg] = useState("");
 
   async function chargerAnnuaire() {
-    const { data, error } = await supabase
-      .from("annuaire")
-      .select("*")
-      .order("nom", { ascending: true });
-    if (error) console.error("Erreur annuaire:", error);
-    else setContacts(data);
+    const { data } = await supabase.from("annuaire").select("*").order("nom", { ascending: true });
+    if (data) setContacts(data);
   }
 
   useEffect(() => { chargerAnnuaire(); }, []);
@@ -296,17 +427,9 @@ function AnnuaireView({ isAdmin }) {
     e.preventDefault();
     setBusy(true);
     setMsg("");
-    const { error } = await supabase
-      .from("annuaire")
-      .insert({ nom: nom.trim(), role: role.trim(), email: email.trim() });
-    
-    if (error) {
-      setMsg("Erreur : " + error.message);
-    } else {
-      setMsg("Contact ajouté !");
-      setNom(""); setRole(""); setEmail("");
-      chargerAnnuaire();
-    }
+    const { error } = await supabase.from("annuaire").insert({ nom: nom.trim(), role: role.trim(), email: email.trim() });
+    if (error) setMsg("Erreur : " + error.message);
+    else { setMsg("Contact ajouté !"); setNom(""); setRole(""); setEmail(""); chargerAnnuaire(); }
     setBusy(false);
   }
 
@@ -317,52 +440,32 @@ function AnnuaireView({ isAdmin }) {
   }
 
   const contactsFiltres = contacts.filter(c => 
-    c.nom.toLowerCase().includes(recherche.toLowerCase()) || 
-    (c.role && c.role.toLowerCase().includes(recherche.toLowerCase()))
+    c.nom.toLowerCase().includes(recherche.toLowerCase()) || (c.role && c.role.toLowerCase().includes(recherche.toLowerCase()))
   );
 
   return (
     <div className="annuaire-view" style={{ maxWidth: 800, margin: "0 auto" }}>
-      
       {isAdmin && (
         <section className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
           <h2 style={{ marginBottom: 16 }}>👑 Ajouter un contact</h2>
           <form onSubmit={ajouterContact}>
             <div className="row">
-              <label>Nom complet
-                <input required value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Ex : M. Dupont" />
-              </label>
-              <label>Rôle / Fonction
-                <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Ex : Responsable scolarité" />
-              </label>
-              <label>Adresse Email
-                <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Ex : dupont@ecole.fr" />
-              </label>
+              <label>Nom complet <input required value={nom} onChange={(e) => setNom(e.target.value)} /></label>
+              <label>Rôle <input value={role} onChange={(e) => setRole(e.target.value)} /></label>
+              <label>Email <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
             </div>
-            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>
-              {busy ? "Ajout..." : "Ajouter à l'annuaire"}
-            </button>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Ajout..." : "Ajouter à l'annuaire"}</button>
             {msg && <p className="msg">{msg}</p>}
           </form>
         </section>
       )}
-
       <section>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
           <h2 style={{ margin: 0 }}>Annuaire de l'école</h2>
-          <input 
-            type="text" 
-            placeholder="🔍 Rechercher un nom ou un rôle..." 
-            value={recherche}
-            onChange={(e) => setRecherche(e.target.value)}
-            style={{ maxWidth: 300, margin: 0 }}
-          />
+          <input type="text" placeholder="🔍 Rechercher..." value={recherche} onChange={(e) => setRecherche(e.target.value)} style={{ maxWidth: 300, margin: 0 }} />
         </div>
-
         {contacts.length === 0 ? (
-          <div className="card empty-state">
-            <p className="muted">L'annuaire est vide pour le moment.</p>
-          </div>
+          <div className="card empty-state"><p className="muted">L'annuaire est vide pour le moment.</p></div>
         ) : (
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
             {contactsFiltres.map(c => (
@@ -372,14 +475,10 @@ function AnnuaireView({ isAdmin }) {
                     <h3 style={{ fontSize: 18, marginBottom: 4 }}>{c.nom}</h3>
                     <span className="muted" style={{ fontSize: 14 }}>{c.role || "Non précisé"}</span>
                   </div>
-                  {isAdmin && (
-                    <button className="action-btn x" onClick={() => supprimerContact(c.id)}>🗑</button>
-                  )}
+                  {isAdmin && <button className="action-btn x" onClick={() => supprimerContact(c.id)}>🗑</button>}
                 </div>
                 <div style={{ marginTop: 16 }}>
-                  <a href={`mailto:${c.email}`} className="btn ghost" style={{ padding: "8px 16px", fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    ✉️ Envoyer un mail
-                  </a>
+                  <a href={`mailto:${c.email}`} className="btn ghost" style={{ padding: "8px 16px", fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8 }}>✉️ Envoyer un mail</a>
                 </div>
               </div>
             ))}
@@ -390,7 +489,7 @@ function AnnuaireView({ isAdmin }) {
   );
 }
 
-/* ---------------- Vue Cours ---------------- */
+/* ---------------- Vue Cours (Dépôt et liste) ---------------- */
 function CoursView({ session, prenom, isAdmin }) {
   const [cours, setCours] = useState([]);
   const [nomCours, setNomCours] = useState("");
@@ -401,20 +500,13 @@ function CoursView({ session, prenom, isAdmin }) {
   const inputRef = useRef(null);
 
   async function charger() {
-    const { data, error } = await supabase
-      .from("cours")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) console.error("Erreur de chargement", error);
-    else setCours(data);
+    const { data } = await supabase.from("cours").select("*").order("created_at", { ascending: false });
+    if (data) setCours(data);
   }
   
   useEffect(() => { charger(); }, []);
 
-  const matieresExistantes = useMemo(() => {
-    return [...new Set(cours.map(c => c.matiere))];
-  }, [cours]);
-
+  const matieresExistantes = useMemo(() => [...new Set(cours.map(c => c.matiere))], [cours]);
   const parMatiere = useMemo(() => {
     const m = {};
     matieresExistantes.forEach((x) => (m[x] = []));
@@ -429,95 +521,56 @@ function CoursView({ session, prenom, isAdmin }) {
 
   async function deposer(e) {
     e.preventDefault();
-    if (!nomCours.trim() || !fichiers.length) {
-      setMsg("Ajoute un nom de cours et au moins un fichier.");
-      return;
-    }
-    setBusy(true);
-    setMsg("");
+    if (!nomCours.trim() || !fichiers.length) return setMsg("Ajoute un nom de cours et un fichier.");
+    setBusy(true); setMsg("");
     try {
       for (const f of fichiers) {
-        const safe = f.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const path = `${session.user.id}/${Date.now()}-${safe}`;
+        const path = `${session.user.id}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         const up = await supabase.storage.from("cours").upload(path, f);
         if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ 
-          matiere: nomCours.trim(), 
-          auteur: prenom, 
-          fichier: path 
-        });
+        const ins = await supabase.from("cours").insert({ matiere: nomCours.trim(), auteur: prenom, fichier: path });
         if (ins.error) throw ins.error;
       }
-      setFichiers([]);
-      setNomCours("");
-      setMsg("Cours déposé ✨");
-      charger();
-    } catch (err) {
-      setMsg("Erreur : " + err.message);
-    } finally {
-      setBusy(false);
-    }
+      setFichiers([]); setNomCours(""); setMsg("Cours déposé ✨"); charger();
+    } catch (err) { setMsg("Erreur : " + err.message); } finally { setBusy(false); }
   }
 
   async function supprimer(c) {
-    if (!confirm("Admin: Voulez-vous vraiment supprimer ce fichier ?")) return;
+    if (!confirm("Admin: Supprimer ce fichier ?")) return;
     await supabase.storage.from("cours").remove([c.fichier]);
     await supabase.from("cours").delete().eq("id", c.id);
     charger();
   }
 
   async function editerNomMatiere(c) {
-    const nvNom = prompt("Admin: Entrez le nouveau nom pour ce cours", c.matiere);
+    const nvNom = prompt("Admin: Entrez le nouveau nom", c.matiere);
     if (nvNom && nvNom.trim() !== "" && nvNom !== c.matiere) {
       await supabase.from("cours").update({ matiere: nvNom.trim() }).eq("id", c.id);
       charger();
     }
   }
 
-  async function genererPdf(m) {
-    alert(`Téléchargement ou génération du PDF de la classe pour : ${m}`);
-  }
-
   return (
     <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
-      
       {isAdmin && (
         <section id="depot" className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h2>👑 Ajouter un cours</h2>
-          </div>
+          <h2>👑 Ajouter un cours</h2>
           <form onSubmit={deposer}>
-            <div className="row">
-              <label>Nom du cours (Matière)
-                <input value={nomCours} onChange={(e) => setNomCours(e.target.value)} placeholder="Ex : Base de données, Mathématiques..." />
-              </label>
+            <div className="row" style={{ marginTop: 16 }}>
+              <label>Matière <input value={nomCours} onChange={(e) => setNomCours(e.target.value)} /></label>
             </div>
-
-            <div
-              className={"drop" + (drag ? " on" : "")}
-              onClick={() => inputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-              onDragLeave={() => setDrag(false)}
-              onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}
-            >
+            <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
               <div style={{ fontSize: 32 }}>⬆️</div>
-              <strong>Glisse tes fichiers ici</strong>
-              <span>ou touche pour choisir un fichier</span>
-              <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden
-                onChange={(e) => ajouterFichiers(e.target.files)} />
+              <strong>Glisse tes fichiers ici</strong><span>ou touche pour choisir</span>
+              <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => ajouterFichiers(e.target.files)} />
             </div>
-
             {fichiers.length > 0 && (
               <ul className="files">
                 {fichiers.map((f, i) => (
-                  <li key={i}>
-                    <span>{f.name}</span>
-                    <button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button>
-                  </li>
+                  <li key={i}><span>{f.name}</span><button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button></li>
                 ))}
               </ul>
             )}
-
             <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi…" : "Créer le cours"}</button>
             {msg && <p className="msg">{msg}</p>}
           </form>
@@ -527,39 +580,26 @@ function CoursView({ session, prenom, isAdmin }) {
       <section>
         <h2 style={{ marginBottom: 24 }}>Cours disponibles</h2>
         {matieresExistantes.length === 0 ? (
-          <div className="card empty-state">
-            <p className="muted">Aucun cours n'a été publié pour le moment.</p>
-          </div>
+          <div className="card empty-state"><p className="muted">Aucun cours n'a été publié.</p></div>
         ) : (
           <div className="grid">
             {matieresExistantes.map((m) => (
               <div className="card" key={m}>
                 <div className="head">
-                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3>
-                  <span className="count">{parMatiere[m].length}</span>
+                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{parMatiere[m].length}</span>
                 </div>
                 <ul className="list">
                   {parMatiere[m].map((c) => (
                     <li key={c.id}>
-                      <div>
-                        <b>{c.auteur}</b>
-                        <small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
-                      </div>
+                      <div><b>{c.auteur}</b><small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small></div>
                       <div className="right">
-                        {isAdmin && (
-                          <>
-                            <button className="action-btn" title="Modifier le nom" onClick={() => editerNomMatiere(c)}>✏️</button>
-                            <button className="action-btn x" title="Supprimer ce fichier" onClick={() => supprimer(c)}>🗑</button>
-                          </>
-                        )}
+                        {isAdmin && (<><button className="action-btn" onClick={() => editerNomMatiere(c)}>✏️</button><button className="action-btn x" onClick={() => supprimer(c)}>🗑</button></>)}
                         <em className={c.statut === "transcrit" ? "ok" : "wait"}>{c.statut || 'En ligne'}</em>
                       </div>
                     </li>
                   ))}
                 </ul>
-                <button className="btn ghost full" onClick={() => genererPdf(m)}>
-                  📄 Télécharger
-                </button>
+                <button className="btn ghost full" onClick={() => alert(`Téléchargement ou génération de : ${m}`)}>📄 Télécharger</button>
               </div>
             ))}
           </div>
@@ -569,29 +609,16 @@ function CoursView({ session, prenom, isAdmin }) {
   );
 }
 
-/* ---------------- Styles (CSS) ---------------- */
+/* ---------------- Styles CSS ---------------- */
 const css = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg-app: #05050A;
-  --bg-sidebar: #090B14;
-  --bg-card: #0F121E;
-  --bg-card-blue: #0E296F;
-  --txt-main: #FFFFFF;
-  --txt-muted: #8B95A5;
-  --border: #1E2438;
-  --accent: #2563EB;
-  --accent-hover: #3B82F6;
-  --danger: #EF4444;
-}
-
+:root { --bg-app: #05050A; --bg-sidebar: #090B14; --bg-card: #0F121E; --bg-card-blue: #0E296F; --txt-main: #FFFFFF; --txt-muted: #8B95A5; --border: #1E2438; --accent: #2563EB; --accent-hover: #3B82F6; --danger: #EF4444; }
 body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg-app); color: var(--txt-main); line-height: 1.5; overflow: hidden; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
 .auth-screen h1 { margin: 24px 0; font-size: 28px; }
-
 .app-layout { display: flex; height: 100vh; width: 100vw; }
 
 .sidebar { width: 260px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px 16px; }
@@ -624,7 +651,9 @@ a:hover { text-decoration: underline; }
 
 .secondary-card { background: var(--bg-card); }
 .dash-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; }
+.link-btn { background: none; border: none; cursor: pointer; }
 .link-muted { color: var(--txt-muted); font-size: 14px; text-decoration: underline; }
+.badge { background: rgba(37,99,235,0.15); color: var(--accent); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid rgba(37,99,235,0.3); }
 
 .empty-state { text-align: center; padding: 40px 20px; }
 .empty-icon { font-size: 32px; margin-bottom: 16px; opacity: 0.5; }
