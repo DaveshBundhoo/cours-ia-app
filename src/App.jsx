@@ -269,76 +269,54 @@ function PlanningView() {
   const [erreur, setErreur] = useState("");
 
   useEffect(() => {
-    async function chargerCalendrier() {
-      try {
-        const icsUrl = "https://cloud.timeedit.net/fr_gge/web/public/s.ics?i=6Z9Q0Q6n5Z5aQu988632YoyZZQ0Q55";
-        
-        // Proxy public qui évite l'erreur CORS sans avoir besoin de créer d'API backend
-        const proxyUrl = `https://proxy.cors.sh/${icsUrl}?t=${new Date().getTime()}`;
-        
-        const res = await fetch(proxyUrl, {
-            headers: {
-                'x-cors-api-key': 'temp_81cc0010996841fb404760a95f850239' 
-            }
-        });
+    const aVenirDe = (txt) => {
+      const t = new Date();
+      t.setHours(0, 0, 0, 0);
+      return parseICS(txt).filter((e) => (e.fin || e.debut) >= t);
+    };
 
-        if (!res.ok) throw new Error(`Le serveur a répondu avec le code ${res.status}`);
-        
-        const text = await res.text();
-        
-        if (text && text.includes("BEGIN:VCALENDAR")) {
-          const parsedEvents = parseICS(text);
-          const aujourdhui = new Date();
-          aujourdhui.setHours(0, 0, 0, 0);
-          const aVenir = parsedEvents.filter(e => e.fin >= aujourdhui);
-          
-          setEvents(aVenir);
-          try { localStorage.setItem("edt-cache", JSON.stringify(aVenir)); } catch (e) {}
-        } else {
-          throw new Error("Le format reçu n'est pas un calendrier valide");
-        }
-      } catch (err) {
-        console.error("Détails de l'erreur calendrier :", err);
-        // Fallback : chargement depuis le cache en cas d'erreur réseau
-        try {
-            const cache = localStorage.getItem("edt-cache");
-            if(cache) {
-                const parsedCache = JSON.parse(cache).map(e => ({
-                    ...e,
-                    debut: new Date(e.debut),
-                    fin: new Date(e.fin)
-                }));
-                setEvents(parsedCache);
-                setErreur(`Mode hors ligne: Impossible de mettre à jour (${err.message})`);
-            } else {
-                 setErreur(`Impossible de charger le calendrier : ${err.message}`);
-            }
-        } catch(e) {
-             setErreur(`Impossible de charger le calendrier : ${err.message}`);
-        }
-      } finally {
-        setLoading(false);
-      }
+    // 1) affiche tout de suite le dernier planning connu (si on en a un)
+    let cache = null;
+    try { cache = localStorage.getItem("edt-cache"); } catch (e) {}
+    if (cache) {
+      try { setEvents(aVenirDe(cache)); setLoading(false); } catch (e) {}
     }
 
-    // Affichage immédiat du cache pour éviter l'écran de chargement
-    try {
-        const cache = localStorage.getItem("edt-cache");
-        if(cache) {
-            const parsedCache = JSON.parse(cache).map(e => ({
-                ...e, debut: new Date(e.debut), fin: new Date(e.fin)
-            }));
-            setEvents(parsedCache);
+    // 2) puis le met à jour depuis TimeEdit (via la fonction /api/edt)
+    fetch("/api/edt")
+      .then(async (r) => {
+        if (r.status === 404) {
+          throw new Error("La fonction /api/edt est introuvable (404) : le dossier « api » (avec edt.js dedans) doit être à la racine du dépôt GitHub, à côté de package.json.");
         }
-    } catch(e) {}
-
-    chargerCalendrier();
+        if (!r.ok) {
+          let d = "";
+          try { d = (await r.json()).error; } catch (e) {}
+          throw new Error("TimeEdit ne répond pas depuis le serveur : " + (d || "erreur " + r.status));
+        }
+        const txt = await r.text();
+        if (!txt.includes("BEGIN:VCALENDAR")) {
+          throw new Error("/api/edt ne renvoie pas un agenda. Ouvre /api/edt dans ton navigateur pour voir ce qu'il renvoie.");
+        }
+        return txt;
+      })
+      .then((txt) => {
+        setEvents(aVenirDe(txt));
+        setErreur("");
+        try { localStorage.setItem("edt-cache", txt); } catch (e) {}
+      })
+      .catch((err) => {
+        const msg = err instanceof TypeError ? "Impossible de joindre /api/edt (réseau ou site non déployé)." : err.message;
+        if (!cache) setErreur(msg);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
+  // Grouper les événements par date
   const eventsParJour = useMemo(() => {
     const groupes = {};
     events.forEach(e => {
       const dateStr = e.debut.toLocaleDateString("fr-FR", { weekday: 'long', day: 'numeric', month: 'long' });
+      // Majuscule sur la première lettre du jour
       const datePropre = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
       if (!groupes[datePropre]) groupes[datePropre] = [];
       groupes[datePropre].push(e);
@@ -346,22 +324,16 @@ function PlanningView() {
     return groupes;
   }, [events]);
 
-  if (loading && events.length === 0) return <div className="placeholder-view"><p>⏳ Synchronisation du planning en cours...</p></div>;
-  if (erreur && events.length === 0) return <div className="placeholder-view"><p style={{ color: "var(--danger)", maxWidth: 600, margin: "0 auto" }}>{erreur}</p></div>;
+  if (loading) return <div className="placeholder-view"><p>⏳ Synchronisation du planning en cours...</p></div>;
+  if (erreur) return <div className="placeholder-view"><p style={{ color: "var(--danger)" }}>{erreur}</p></div>;
   if (events.length === 0) return <div className="placeholder-view"><p className="muted">Aucun cours à venir trouvé dans le calendrier.</p></div>;
 
   return (
     <div className="planning-view" style={{ maxWidth: 800, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: "10px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h2 style={{ margin: 0 }}>Emploi du temps</h2>
-        {erreur ? (
-             <span className="badge" style={{background: "rgba(239, 68, 68, 0.15)", color: "var(--danger)", border: "1px solid rgba(239, 68, 68, 0.3)"}}>⚠️ Non synchronisé</span>
-        ) : (
-            <span className="badge">🔄 Synchronisé</span>
-        )}
+        <span className="badge">🔄 Synchronisé</span>
       </div>
-      
-      {erreur && <p style={{ color: "var(--danger)", fontSize: "14px", marginBottom: "20px" }}>{erreur}</p>}
 
       <div className="planning-list">
         {Object.entries(eventsParJour).map(([jour, coursDuJour]) => (
@@ -387,7 +359,7 @@ function PlanningView() {
                     )}
                   </div>
                   {cours.description && (
-                    <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{cours.description}</p>
+                    <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{cours.description.replace(/\\n/g, ', ')}</p>
                   )}
                 </div>
               ))}
@@ -405,47 +377,43 @@ function unescapeICS(t = "") {
 }
 
 function parseICS(icsText) {
-  if (!icsText) return [];
-  const unfolded = icsText.replace(/\r\n[ \t]/g, '');
+  // Recolle les lignes coupées (TimeEdit le fait parfois)
+  const unfolded = icsText.replace(/\r?\n[ \t]/g, "");
   const lines = unfolded.split(/\r\n|\n|\r/);
   const events = [];
   let currentEvent = null;
 
-  lines.forEach(line => {
-    if (line === 'BEGIN:VEVENT') {
+  lines.forEach((line) => {
+    if (line === "BEGIN:VEVENT") {
       currentEvent = {};
-    } else if (line === 'END:VEVENT') {
+    } else if (line === "END:VEVENT") {
       if (currentEvent && currentEvent.debut) events.push(currentEvent);
       currentEvent = null;
     } else if (currentEvent) {
-      const match = line.match(/^([^:]+):(.*)$/);
-      if (match) {
-        const [, fullKey, value] = match;
-        const key = fullKey.split(';')[0]; 
-        
-        if (key === 'SUMMARY') currentEvent.matiere = unescapeICS(value);
-        if (key === 'LOCATION') currentEvent.salle = unescapeICS(value);
-        if (key === 'DESCRIPTION') currentEvent.description = unescapeICS(value);
-        if (key === 'DTSTART') currentEvent.debut = parseICSDate(value);
-        if (key === 'DTEND') currentEvent.fin = parseICSDate(value);
-      }
+      const i = line.indexOf(":");
+      if (i < 0) return;
+      const key = line.slice(0, i).split(";")[0].toUpperCase(); // ignore TZID etc.
+      const value = line.slice(i + 1);
+
+      if (key === "SUMMARY") currentEvent.matiere = unescapeICS(value);
+      if (key === "LOCATION") currentEvent.salle = unescapeICS(value);
+      if (key === "DESCRIPTION") currentEvent.description = unescapeICS(value);
+      if (key === "DTSTART") currentEvent.debut = parseICSDate(value);
+      if (key === "DTEND") currentEvent.fin = parseICSDate(value);
     }
   });
   return events.sort((a, b) => a.debut - b.debut);
 }
 
-function parseICSDate(icsDateStr) {
-  const match = icsDateStr.match(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
-  if (match) {
-    const [, y, m, d, h, min, s] = match;
-    if (icsDateStr.endsWith('Z')) {
-      return new Date(Date.UTC(y, m - 1, d, h, min, s));
-    } else {
-      return new Date(y, m - 1, d, h, min, s);
-    }
-  }
-  return new Date();
+// Transforme la date ICS (ex: 20241007T083000Z ou 20241007) en objet Date Javascript
+function parseICSDate(str) {
+  const m = str.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
+  if (!m) return null;
+  const [, y, mo, d, h = 0, mi = 0, sec = 0, z] = m;
+  const n = [y, mo - 1, d, h, mi, sec].map(Number);
+  return z ? new Date(Date.UTC(...n)) : new Date(...n);
 }
+
 
 /* ---------------- Vue Annuaire ---------------- */
 function AnnuaireView({ isAdmin }) {
