@@ -1010,9 +1010,10 @@ function CoursView({ session, prenom, isAdmin }) {
     setIaModal({ matiere, texte: "", loading: true }); 
     
     try {
-      const res = await fetch("/api/generer-cours", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+         const { data: { session: sess } } = await supabase.auth.getSession();
+         const res = await fetch("/api/generer-cours", {
+         method: "POST",
+         headers: { "Content-Type": "application/json", Authorization: "Bearer " + sess.access_token },
         body: JSON.stringify({ matiere })
       });
       
