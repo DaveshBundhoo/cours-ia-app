@@ -211,7 +211,9 @@ function Layout({ session }) {
 
   const meta = session?.user?.user_metadata || {};
   const prenom = meta.prenom || session.user.email.split('@')[0];
-  const isAdmin = prenom.trim().toLowerCase() === "davesh, eva";
+  const isAdmin = prenom.trim().toLowerCase() === "davesh";
+  const isAdmin = prenom.trim().toLowerCase() === "eva";
+
 
   // Redirection automatique si un non-admin essaie d'aller sur l'onglet Cours
   useEffect(() => {
