@@ -169,6 +169,25 @@ function usePlanning() {
   return { events, loading: ics.loading, erreur: ics.erreur, recharger: man.charger };
 }
 
+/* ---------------- Dates importantes (Supabase) ---------------- */
+function useDates() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const charger = async () => {
+    const { data } = await supabase.from("dates_importantes").select("*").order("date", { ascending: true });
+    if (data) setRows(data);
+    setLoading(false);
+  };
+  useEffect(() => { charger(); }, []);
+  return { rows, loading, charger };
+}
+const parseJour = (s) => { const [y, m, d] = String(s).split("-").map(Number); return new Date(y, m - 1, d); };
+const debutAujourdhui = () => { const t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate()); };
+function jMoins(d) {
+  const n = Math.round((d - debutAujourdhui()) / 86400000);
+  return n === 0 ? "Aujourd'hui" : n === 1 ? "Demain" : n < 0 ? "Passé" : "J-" + n;
+}
+
 /* ---------------- Icônes ---------------- */
 const ICON_PATHS = {
   home: "M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z",
@@ -246,7 +265,7 @@ function Layout({ session }) {
           {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
           {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
           {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
-          {activeTab === "Date importante" && <AdminPlaceholderView title={activeTab} isAdmin={isAdmin} />}
+          {activeTab === "Date importante" && <DatesView isAdmin={isAdmin} />}
         </div>
       </main>
 
@@ -271,17 +290,36 @@ function AccueilView({ prenom, isAdmin, setActiveTab }) {
   const { events, loading } = usePlanning();
   const now = new Date();
   const prochaines = events.filter((e) => (e.fin || e.debut) > now).slice(0, 3);
+  const dates = useDates();
+  const datesAVenir = dates.rows.filter((r) => parseJour(r.date) >= debutAujourdhui()).slice(0, 4);
 
   return (
     <div className="accueil-view">
       <h1 className="greeting">Bonjour,<br />{prenom} {isAdmin && <span title="Admin">👑</span>}</h1>
       <div className="dashboard-grid">
         <div className="dash-card primary-card">
-          <h3>Vos tâches (1)</h3>
-          <div className="task-item">
-            <span className="task-number">1</span>
-            <p>Numéro de CVEC requis</p>
+          <div className="dash-card-header">
+            <h3>Dates importantes</h3>
+            <button onClick={() => setActiveTab("Date importante")} className="link-btn link-muted">Voir tout</button>
           </div>
+          {dates.loading && <p style={{ opacity: .8 }}>Chargement…</p>}
+          {!dates.loading && datesAVenir.length === 0 && <p style={{ opacity: .8 }}>Aucune date importante à venir.</p>}
+          {datesAVenir.map((r) => {
+            const d = parseJour(r.date);
+            return (
+              <div className="task-item date-item" key={r.id}>
+                <div className="date-badge">
+                  <span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span>
+                  <b>{d.getDate()}</b>
+                </div>
+                <div className="date-info">
+                  <p>{r.titre}</p>
+                  {r.detail && <small>{r.detail}</small>}
+                </div>
+                <span className="date-left">{jMoins(d)}</span>
+              </div>
+            );
+          })}
         </div>
         <div className="dash-card secondary-card">
           <div className="dash-card-header">
@@ -312,6 +350,82 @@ function AccueilView({ prenom, isAdmin, setActiveTab }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Vue Dates importantes ---------------- */
+function DatesView({ isAdmin }) {
+  const { rows, loading, charger } = useDates();
+  const [titre, setTitre] = useState("");
+  const [date, setDate] = useState("");
+  const [detail, setDetail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function ajouter(e) {
+    e.preventDefault();
+    if (!titre.trim() || !date) return setMsg("Remplis le titre et la date.");
+    setBusy(true); setMsg("");
+    const { error } = await supabase.from("dates_importantes").insert({ titre: titre.trim(), date, detail: detail.trim() });
+    setBusy(false);
+    if (error) return setMsg("Erreur : " + error.message);
+    setTitre(""); setDate(""); setDetail(""); charger();
+  }
+  async function supprimer(id) {
+    if (!confirm("Supprimer cette date ?")) return;
+    const { error } = await supabase.from("dates_importantes").delete().eq("id", id);
+    if (error) return alert("Erreur : " + error.message);
+    charger();
+  }
+
+  const aVenir = rows.filter((r) => parseJour(r.date) >= debutAujourdhui());
+  const passees = rows.filter((r) => parseJour(r.date) < debutAujourdhui()).reverse();
+
+  const ligne = (r, passe) => {
+    const d = parseJour(r.date);
+    return (
+      <div className={"date-row" + (passe ? " past" : "")} key={r.id}>
+        <div className="date-badge">
+          <span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span>
+          <b>{d.getDate()}</b>
+        </div>
+        <div className="date-info">
+          <p>{r.titre}</p>
+          <small>{maj(d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}{r.detail ? " · " + r.detail : ""}</small>
+        </div>
+        <span className="date-left">{jMoins(d)}</span>
+        {isAdmin && <button className="action-btn x" onClick={() => supprimer(r.id)}>🗑</button>}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ maxWidth: 800, margin: "0 auto" }}>
+      {isAdmin && (
+        <section className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
+          <h2 style={{ marginBottom: 16 }}>👑 Ajouter une date importante</h2>
+          <form onSubmit={ajouter}>
+            <div className="row">
+              <label>Titre <input value={titre} onChange={(e) => setTitre(e.target.value)} placeholder="Ex : Partiel de maths" /></label>
+              <label>Date <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+            </div>
+            <label style={{ marginTop: 16 }}>Détail (facultatif) <input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="Ex : Salle 204, 9h" /></label>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Ajout…" : "Ajouter"}</button>
+            {msg && <p className="msg">{msg}</p>}
+          </form>
+        </section>
+      )}
+      <h2 style={{ marginBottom: 20 }}>À venir</h2>
+      {loading ? <p className="muted">Chargement…</p> : aVenir.length === 0 ? (
+        <div className="card empty-state"><p className="muted">Aucune date importante à venir.</p></div>
+      ) : <div className="date-list">{aVenir.map((r) => ligne(r, false))}</div>}
+      {passees.length > 0 && (
+        <>
+          <h2 style={{ margin: "36px 0 20px" }}>Passées</h2>
+          <div className="date-list">{passees.map((r) => ligne(r, true))}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -1053,6 +1167,21 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .tag-manuel { margin-top: 12px; font-size: 12px; color: var(--accent); }
 .btn.danger { color: var(--danger); }
 
+.primary-card .dash-card-header { margin-bottom: 16px; }
+.primary-card .dash-card-header h3 { margin-bottom: 0; }
+.date-item + .date-item { margin-top: 10px; }
+.date-badge { width: 46px; height: 50px; flex: none; border-radius: 12px; background: rgba(255,255,255,.14); display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
+.date-badge span { font-size: 11px; text-transform: uppercase; opacity: .75; }
+.date-badge b { font-size: 18px; }
+.date-info { flex: 1; min-width: 0; }
+.date-info p { font-weight: 600; overflow-wrap: anywhere; }
+.date-info small { display: block; opacity: .75; font-size: 13px; margin-top: 2px; }
+.date-left { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; background: rgba(255,255,255,.16); white-space: nowrap; }
+.date-list { display: grid; gap: 12px; }
+.date-row { display: flex; align-items: center; gap: 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 14px 18px; }
+.date-row .date-badge { background: rgba(47,107,255,.14); }
+.date-row .date-left { background: rgba(47,107,255,.15); color: var(--accent); }
+.date-row.past { opacity: .5; }
 .bottom-bar { display: none; background: var(--bg-sidebar); border-top: 1px solid var(--border); height: 68px; padding-bottom: env(safe-area-inset-bottom); }
 .bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
 .bottom-link.active { color: var(--accent); }
