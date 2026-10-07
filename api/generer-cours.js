@@ -1,12 +1,13 @@
-// api/generer-cours.js
+import { createClient } from '@supabase/supabase-js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// C'EST LA LIGNE MAGIQUE : Elle indique à Vercel d'utiliser un serveur "Edge" 
-// pour ne pas subir la coupure des 10 secondes.
+// La ligne magique pour empêcher Vercel de couper au bout de 10 secondes
 export const config = {
   runtime: 'edge', 
 };
 
 export default async function handler(req) {
+  // Sur un serveur Edge, on utilise les standards du Web (comme Response)
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Méthode non autorisée' }), { status: 405 });
   }
@@ -16,8 +17,9 @@ export default async function handler(req) {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return new Response(JSON.stringify({ error: 'Non autorisé. Connectez-vous.' }), { status: 401 });
     }
+    const token = authHeader.split(' ')[1];
 
-    // Récupération des données envoyées par ton App React
+    // Récupération des données envoyées par ton application React
     const body = await req.json();
     const { matiere, chapitre, fichiers } = body;
 
@@ -30,45 +32,33 @@ export default async function handler(req) {
     const SB_KEY = process.env.VITE_SUPABASE_ANON_KEY;
 
     if (!GKEY || !SB_URL || !SB_KEY) {
-        throw new Error("Clés API manquantes dans les paramètres Vercel.");
+        throw new Error("Clés API manquantes dans Vercel.");
     }
 
-    // 1. Vérifier que l'étudiant est bien connecté (sécurité Supabase)
-    const sbRes = await fetch(`${SB_URL}/auth/v1/user`, {
-        headers: { 'apikey': SB_KEY, 'Authorization': authHeader }
-    });
-    if (!sbRes.ok) throw new Error("Session expirée. Veuillez recharger la page.");
+    // 1. Vérification de la session utilisateur dans Supabase
+    const supabase = createClient(SB_URL, SB_KEY);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) throw new Error("Session expirée. Veuillez recharger la page.");
 
-    // 2. Préparer les instructions et intégrer le PDF pour Gemini
-    const parts = [
-        { text: `Voici le support (PDF ou photos) du cours de "${matiere}" (Chapitre : ${chapitre}). Ton objectif est de synthétiser ce document pour créer une fiche de révision complète et facile à lire en Markdown (avec des titres ## et des listes). Ne perds aucune définition importante.` }
-    ];
+    // 2. Utilisation du SDK OFFICIEL de Google (qui gère l'URL et les modèles tout seul)
+    const genAI = new GoogleGenerativeAI(GKEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
+    const prompt = `Voici le support (PDF ou photos) du cours de "${matiere}" (Chapitre : ${chapitre}). Ton objectif est de synthétiser ce document pour créer une fiche de révision complète et facile à lire en Markdown (avec des titres ## et des listes). Ne perds aucune définition importante.`;
+    
+    // On prépare le tableau des éléments à envoyer à Gemini
+    const parts = [prompt];
     for (const f of fichiers) {
         parts.push({
             inlineData: { mimeType: f.mimeType, data: f.data }
         });
     }
 
-    // 3. Demander à Gemini de travailler (l'attente peut durer 20s, Edge l'autorise)
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GKEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig: { temperature: 0.2 }
-        })
-    });
+    // 3. Appel de l'IA (Le serveur Edge permet d'attendre la réponse complète sans couper)
+    const result = await model.generateContent(parts);
+    const text = result.response.text();
 
-    const geminiData = await geminiRes.json();
-
-    if (!geminiRes.ok) {
-        throw new Error((geminiData.error && geminiData.error.message) || "Gemini a refusé la requête.");
-    }
-
-    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "Erreur : L'IA n'a rien renvoyé.";
-
-    // 4. Renvoyer la synthèse à ton application React
+    // 4. Renvoi du texte généré au frontend
     return new Response(JSON.stringify({ cours_markdown: text }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
