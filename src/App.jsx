@@ -40,59 +40,42 @@ function Login() {
 
   async function submit(e) {
     e.preventDefault();
-    setBusy(true);
-    setMsg("");
-    
+    setBusy(true); setMsg("");
     let error;
     if (mode === "login") {
       const res = await supabase.auth.signInWithPassword({ email, password: pwd });
       error = res.error;
     } else {
       const res = await supabase.auth.signUp({ 
-        email, 
-        password: pwd,
-        options: { data: { prenom: prenom.trim() } }
+        email, password: pwd, options: { data: { prenom: prenom.trim() } }
       });
       error = res.error;
     }
-
     if (error) setMsg(error.message);
     else if (mode === "signup") setMsg("Compte créé ! Vérifie tes mails pour confirmer, puis connecte-toi.");
-    
     setBusy(false);
   }
 
   return (
     <div className="auth-screen full-screen">
       <div className="wrap" style={{ maxWidth: 420 }}>
-        <div className="logo-header">
-          <span className="logo-icon">🚀</span> Espace Étudiant
-        </div>
+        <div className="logo-header"><span className="logo-icon">🚀</span> Espace Étudiant</div>
         <h1>{mode === "login" ? "Connexion" : "Créer un compte"}</h1>
         <form className="card" onSubmit={submit}>
           {mode === "signup" && (
-            <>
-              <label>Prénom
-                <input type="text" required value={prenom} onChange={(e) => setPrenom(e.target.value)} placeholder="Ex: Léa" />
-              </label>
-              <div style={{ height: 16 }} />
-            </>
+            <label>Prénom <input type="text" required value={prenom} onChange={(e) => setPrenom(e.target.value)} placeholder="Ex: Léa" /></label>
           )}
-          <label>Email
-            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
           <div style={{ height: 16 }} />
-          <label>Mot de passe
-            <input type="password" required minLength={6} value={pwd} onChange={(e) => setPwd(e.target.value)} />
-          </label>
+          <label>Email <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          <div style={{ height: 16 }} />
+          <label>Mot de passe <input type="password" required minLength={6} value={pwd} onChange={(e) => setPwd(e.target.value)} /></label>
           <button className="btn full" disabled={busy} style={{ marginTop: 24 }}>
             {busy ? "…" : mode === "login" ? "Se connecter" : "S'inscrire"}
           </button>
           {msg && <p className="msg">{msg}</p>}
           <p className="muted" style={{ marginTop: 20, textAlign: "center" }}>
-            {mode === "login" ? "Pas de compte ?" : "Déjà un compte ?"}{" "}
             <a href="#" onClick={(e) => { e.preventDefault(); setMode(mode === "login" ? "signup" : "login"); setMsg(""); }}>
-              {mode === "login" ? "S'inscrire" : "Se connecter"}
+              {mode === "login" ? "Créer un compte" : "Se connecter"}
             </a>
           </p>
         </form>
@@ -101,7 +84,7 @@ function Login() {
   );
 }
 
-/* ---------------- Calendrier (lecture de l'agenda) ---------------- */
+/* ---------------- Hooks pour la base de données ---------------- */
 function useCalendar() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -110,41 +93,22 @@ function useCalendar() {
   useEffect(() => {
     let cache = null;
     try { cache = localStorage.getItem("edt-cache"); } catch (e) {}
-    if (cache) {
-      try { setEvents(parseICS(cache)); setLoading(false); } catch (e) {}
-    }
+    if (cache) { try { setEvents(parseICS(cache)); setLoading(false); } catch (e) {} }
 
     fetch("/api/edt")
       .then(async (r) => {
-        if (r.status === 404) {
-          throw new Error("La fonction /api/edt est introuvable (404) : le dossier « api » (avec edt.js dedans) doit être à la racine du dépôt GitHub, à côté de package.json.");
-        }
-        if (!r.ok) {
-          let d = "";
-          try { d = (await r.json()).error; } catch (e) {}
-          throw new Error("TimeEdit ne répond pas depuis le serveur : " + (d || "erreur " + r.status));
-        }
+        if (!r.ok) throw new Error("Erreur " + r.status);
         const txt = await r.text();
-        if (!txt.includes("BEGIN:VCALENDAR")) {
-          throw new Error("/api/edt ne renvoie pas un agenda. Ouvre /api/edt?debug=1 pour voir ce qu'il renvoie.");
-        }
+        if (!txt.includes("BEGIN:VCALENDAR")) throw new Error("Agenda invalide.");
         return txt;
       })
-      .then((txt) => {
-        setEvents(parseICS(txt));
-        setErreur("");
-        try { localStorage.setItem("edt-cache", txt); } catch (e) {}
-      })
-      .catch((err) => {
-        setErreur(err instanceof TypeError ? "Impossible de joindre /api/edt (réseau ou site non déployé)." : err.message);
-      })
+      .then((txt) => { setEvents(parseICS(txt)); setErreur(""); try { localStorage.setItem("edt-cache", txt); } catch (e) {} })
+      .catch((err) => setErreur(err.message))
       .finally(() => setLoading(false));
   }, []);
-
   return { events, loading, erreur };
 }
 
-/* ---------------- Cours ajoutés à la main (Supabase) ---------------- */
 function useManuels() {
   const [rows, setRows] = useState([]);
   const charger = async () => {
@@ -155,21 +119,16 @@ function useManuels() {
   return { rows, charger };
 }
 
-// agenda de l'école + cours ajoutés à la main, mélangés
 function usePlanning() {
   const ics = useCalendar();
   const man = useManuels();
   const events = useMemo(() => {
-    const manuels = man.rows.map((r) => ({
-      id: r.id, manuel: true, matiere: r.titre, salle: r.salle, description: r.description,
-      debut: new Date(r.debut), fin: new Date(r.fin),
-    }));
+    const manuels = man.rows.map((r) => ({ id: r.id, manuel: true, matiere: r.titre, salle: r.salle, description: r.description, debut: new Date(r.debut), fin: new Date(r.fin) }));
     return [...ics.events, ...manuels].sort((a, b) => a.debut - b.debut);
   }, [ics.events, man.rows]);
   return { events, loading: ics.loading, erreur: ics.erreur, recharger: man.charger };
 }
 
-/* ---------------- Dates importantes (Supabase) ---------------- */
 function useDates() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -197,32 +156,20 @@ const ICON_PATHS = {
   power: "M12 3v9M6.3 6.8a8 8 0 1 0 11.4 0",
 };
 function Icon({ n, size = 20 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d={ICON_PATHS[n]} />
-    </svg>
-  );
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={ICON_PATHS[n]} /></svg>;
 }
 
 /* ---------------- Layout & Navigation ---------------- */
 function Layout({ session }) {
   const [activeTab, setActiveTab] = useState("Accueil");
-
   const meta = session?.user?.user_metadata || {};
   const prenom = meta.prenom || session.user.email.split('@')[0];
   const isAdmin = prenom.trim().toLowerCase() === "davesh";
 
-  // Redirection automatique si un non-admin essaie d'aller sur l'onglet Cours
-  useEffect(() => {
-    if (!isAdmin && activeTab === "Cours") {
-      setActiveTab("Accueil");
-    }
-  }, [isAdmin, activeTab]);
-
   const NAV_ITEMS = [
     { id: "Accueil", icon: "home" },
     { id: "Planning", icon: "cal" },
-    ...(isAdmin ? [{ id: "Cours", icon: "book" }] : []), 
+    { id: "Fiches IA", icon: "book" }, 
     { id: "Date importante", icon: "star" },
   ];
 
@@ -231,20 +178,12 @@ function Layout({ session }) {
       <aside className="sidebar desktop-only">
         <div className="logo-header">
           <span className="logo-icon">🚀</span>
-          <div>
-            <strong>Espace</strong><br />
-            <small>Étudiant</small>
-          </div>
+          <div><strong>Espace</strong><br /><small>Étudiant</small></div>
         </div>
         <nav className="nav-menu">
           {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              className={`nav-link ${activeTab === item.id ? "active" : ""}`}
-              onClick={() => setActiveTab(item.id)}
-            >
-              <Icon n={item.icon} size={18} />
-              {item.id}
+            <button key={item.id} className={`nav-link ${activeTab === item.id ? "active" : ""}`} onClick={() => setActiveTab(item.id)}>
+              <Icon n={item.icon} size={18} /> {item.id}
             </button>
           ))}
         </nav>
@@ -254,20 +193,16 @@ function Layout({ session }) {
         <header className="topbar">
           <div className="breadcrumb">{activeTab === "Profil" ? "Mon profil" : activeTab}</div>
           <div className="user-menu">
-            <button className="user-name desktop-only name-btn" onClick={() => setActiveTab("Profil")}>
-              {prenom} {isAdmin && "👑"}
-            </button>
+            <button className="user-name desktop-only name-btn" onClick={() => setActiveTab("Profil")}>{prenom} {isAdmin && "👑"}</button>
             <button className="logout-btn mobile-only" onClick={() => setActiveTab("Profil")} title="Profil">👤</button>
-            <button className="logout-btn" onClick={() => supabase.auth.signOut()} title="Déconnexion">
-              <Icon n="power" size={16} />
-            </button>
+            <button className="logout-btn" onClick={() => supabase.auth.signOut()} title="Déconnexion"><Icon n="power" size={16} /></button>
           </div>
         </header>
 
         <div className="scroll-area">
           {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} setActiveTab={setActiveTab} />}
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
-          {activeTab === "Cours" && isAdmin && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Fiches IA" && <FichesView session={session} prenom={prenom} isAdmin={isAdmin} />}
           {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
           {activeTab === "Date importante" && <DatesView isAdmin={isAdmin} />}
         </div>
@@ -275,13 +210,8 @@ function Layout({ session }) {
 
       <nav className="bottom-bar mobile-only">
         {NAV_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            className={`bottom-link ${activeTab === item.id ? "active" : ""}`}
-            onClick={() => setActiveTab(item.id)}
-          >
-            <Icon n={item.icon} size={21} />
-            <span className="nav-label">{item.id.split(' ')[0]}</span>
+          <button key={item.id} className={`bottom-link ${activeTab === item.id ? "active" : ""}`} onClick={() => setActiveTab(item.id)}>
+            <Icon n={item.icon} size={21} /> <span className="nav-label">{item.id.split(' ')[0]}</span>
           </button>
         ))}
       </nav>
@@ -289,7 +219,7 @@ function Layout({ session }) {
   );
 }
 
-/* ---------------- Vue Accueil ---------------- */
+/* ---------------- Vues de base (Accueil, Profil, Dates) ---------------- */
 function AccueilView({ prenom, isAdmin, setActiveTab }) {
   const { events, loading } = usePlanning();
   const now = new Date();
@@ -312,14 +242,8 @@ function AccueilView({ prenom, isAdmin, setActiveTab }) {
             const d = parseJour(r.date);
             return (
               <div className="task-item date-item" key={r.id}>
-                <div className="date-badge">
-                  <span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span>
-                  <b>{d.getDate()}</b>
-                </div>
-                <div className="date-info">
-                  <p>{r.titre}</p>
-                  {r.detail && <small>{r.detail}</small>}
-                </div>
+                <div className="date-badge"><span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span><b>{d.getDate()}</b></div>
+                <div className="date-info"><p>{r.titre}</p>{r.detail && <small>{r.detail}</small>}</div>
                 <span className="date-left">{jMoins(d)}</span>
               </div>
             );
@@ -333,22 +257,16 @@ function AccueilView({ prenom, isAdmin, setActiveTab }) {
           {loading && prochaines.length === 0 && <p className="muted">Chargement…</p>}
           {!loading && prochaines.length === 0 && (
             <div className="empty-state" style={{ padding: "16px 0" }}>
-              <div className="empty-icon">⏳</div>
-              <p style={{ fontWeight: 600 }}>Rien à voir ici.</p>
+              <div className="empty-icon">⏳</div><p style={{ fontWeight: 600 }}>Rien à voir ici.</p>
               <p className="muted" style={{ fontSize: 14 }}>Aucune séance planifiée pour le moment.</p>
             </div>
           )}
           {prochaines.map((e, i) => (
             <div className="next-item" key={i}>
-              <div className="next-date">
-                <span>{e.debut.toLocaleDateString("fr-FR", { weekday: "short" })}</span>
-                <b>{e.debut.getDate()}</b>
-              </div>
+              <div className="next-date"><span>{e.debut.toLocaleDateString("fr-FR", { weekday: "short" })}</span><b>{e.debut.getDate()}</b></div>
               <div>
                 <div className="next-title">{e.matiere || "Cours"}</div>
-                <div className="muted" style={{ fontSize: 13 }}>
-                  {hhmm(e.debut)}{e.fin ? ` – ${hhmm(e.fin)}` : ""}{e.salle ? ` · ${e.salle}` : ""}
-                </div>
+                <div className="muted" style={{ fontSize: 13 }}>{hhmm(e.debut)}{e.fin ? ` – ${hhmm(e.fin)}` : ""}{e.salle ? ` · ${e.salle}` : ""}</div>
               </div>
             </div>
           ))}
@@ -358,7 +276,28 @@ function AccueilView({ prenom, isAdmin, setActiveTab }) {
   );
 }
 
-/* ---------------- Vue Dates importantes ---------------- */
+function ProfilView({ prenomActuel }) {
+  const [nvPrenom, setNvPrenom] = useState(prenomActuel);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function updateProfil(e) {
+    e.preventDefault(); setBusy(true);
+    const { error } = await supabase.auth.updateUser({ data: { prenom: nvPrenom.trim() } });
+    if (error) setMsg("Erreur: " + error.message); else setMsg("Profil mis à jour ! 👑 (Rechargez la page si besoin)");
+    setBusy(false);
+  }
+  return (
+    <div className="card" style={{ maxWidth: 500, margin: "0 auto" }}>
+      <h2>Mon Profil</h2>
+      <form onSubmit={updateProfil}>
+        <div className="row"><label>Prénom affiché<input required value={nvPrenom} onChange={e => setNvPrenom(e.target.value)} /></label></div>
+        <button className="btn full" disabled={busy || !nvPrenom} style={{ marginTop: 20 }}>{busy ? "Mise à jour..." : "Enregistrer"}</button>
+        {msg && <p className="msg">{msg}</p>}
+      </form>
+    </div>
+  );
+}
+
 function DatesView({ isAdmin }) {
   const { rows, loading, charger } = useDates();
   const [titre, setTitre] = useState("");
@@ -378,26 +317,18 @@ function DatesView({ isAdmin }) {
   }
   async function supprimer(id) {
     if (!confirm("Supprimer cette date ?")) return;
-    const { error } = await supabase.from("dates_importantes").delete().eq("id", id);
-    if (error) return alert("Erreur : " + error.message);
+    await supabase.from("dates_importantes").delete().eq("id", id);
     charger();
   }
 
   const aVenir = rows.filter((r) => parseJour(r.date) >= debutAujourdhui());
   const passees = rows.filter((r) => parseJour(r.date) < debutAujourdhui()).reverse();
-
   const ligne = (r, passe) => {
     const d = parseJour(r.date);
     return (
       <div className={"date-row" + (passe ? " past" : "")} key={r.id}>
-        <div className="date-badge">
-          <span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span>
-          <b>{d.getDate()}</b>
-        </div>
-        <div className="date-info">
-          <p>{r.titre}</p>
-          <small>{maj(d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}{r.detail ? " · " + r.detail : ""}</small>
-        </div>
+        <div className="date-badge"><span>{d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span><b>{d.getDate()}</b></div>
+        <div className="date-info"><p>{r.titre}</p><small>{maj(d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}{r.detail ? " · " + r.detail : ""}</small></div>
         <span className="date-left">{jMoins(d)}</span>
         {isAdmin && <button className="action-btn x" onClick={() => supprimer(r.id)}>🗑</button>}
       </div>
@@ -421,67 +352,292 @@ function DatesView({ isAdmin }) {
         </section>
       )}
       <h2 style={{ marginBottom: 20 }}>À venir</h2>
-      {loading ? <p className="muted">Chargement…</p> : aVenir.length === 0 ? (
-        <div className="card empty-state"><p className="muted">Aucune date importante à venir.</p></div>
-      ) : <div className="date-list">{aVenir.map((r) => ligne(r, false))}</div>}
-      {passees.length > 0 && (
-        <>
-          <h2 style={{ margin: "36px 0 20px" }}>Passées</h2>
-          <div className="date-list">{passees.map((r) => ligne(r, true))}</div>
-        </>
-      )}
+      {loading ? <p className="muted">Chargement…</p> : aVenir.length === 0 ? <div className="card empty-state"><p className="muted">Aucune date importante à venir.</p></div> : <div className="date-list">{aVenir.map((r) => ligne(r, false))}</div>}
+      {passees.length > 0 && <><h2 style={{ margin: "36px 0 20px" }}>Passées</h2><div className="date-list">{passees.map((r) => ligne(r, true))}</div></>}
     </div>
   );
 }
 
-/* ---------------- Vues Profil & Admin Placeholder ---------------- */
-function ProfilView({ prenomActuel }) {
-  const [nvPrenom, setNvPrenom] = useState(prenomActuel);
+/* ---------------- VUE SYNTHESES IA (Génération à la volée) ---------------- */
+
+// Fonction utilitaire pour lire un fichier local et le convertir en Base64
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onload = () => resolve(reader.result.split(',')[1]);
+  reader.onerror = error => reject(error);
+});
+
+function FichesView({ session, prenom, isAdmin }) {
+  const [fiches, setFiches] = useState([]);
+  
+  // Champs pour générer une nouvelle fiche
+  const [matiere, setMatiere] = useState(""); 
+  const [chapitre, setChapitre] = useState(""); 
+  const [fichiers, setFichiers] = useState([]);
+  
+  const [drag, setDrag] = useState(false);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  
+  // Modales
+  const [previewModal, setPreviewModal] = useState(null); // Contient le texte généré à l'instant
+  const [lectureModal, setLectureModal] = useState(null); // Pour lire une fiche déjà enregistrée dans la BDD
+  
+  const inputRef = useRef(null);
 
-  async function updateProfil(e) {
+  async function chargerFiches() {
+    const { data } = await supabase.from("fiches_ia").select("*").order("created_at", { ascending: false });
+    if (data) setFiches(data);
+  }
+  
+  useEffect(() => { chargerFiches(); }, []);
+
+  // Grouper les fiches pour l'affichage (Uniquement les publiques OU celles de l'auteur)
+  const fichesVisibles = useMemo(() => {
+    return fiches.filter(f => f.is_public || f.auteur === prenom || isAdmin);
+  }, [fiches, prenom, isAdmin]);
+
+  const matieresExistantes = useMemo(() => [...new Set(fichesVisibles.map(f => f.matiere))], [fichesVisibles]);
+  const parMatiereEtChapitre = useMemo(() => {
+    const m = {};
+    matieresExistantes.forEach(mat => { m[mat] = {}; });
+    fichesVisibles.forEach(f => {
+      const chap = f.chapitre || "Général";
+      if (!m[f.matiere][chap]) m[f.matiere][chap] = [];
+      m[f.matiere][chap].push(f);
+    });
+    return m;
+  }, [fichesVisibles, matieresExistantes]);
+
+  const ajouterFichiers = (list) => {
+    const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
+    setFichiers((prev) => [...prev, ...ok]);
+  };
+
+  // 1. Envoyer les fichiers directement à l'API (SANS les sauvegarder dans Supabase)
+  async function genererSynthese(e) {
     e.preventDefault();
+    if (!matiere.trim() || !fichiers.length) return setMsg("Remplis la matière et ajoute au moins un fichier.");
+    
+    setBusy(true); 
+    setMsg("L'IA lit tes fichiers, ça peut prendre 30 secondes...");
+    
+    try {
+      // Préparer les fichiers en Base64
+      const base64Files = await Promise.all(fichiers.map(async (f) => ({
+        mimeType: f.type,
+        data: await fileToBase64(f)
+      })));
+
+      const { data: { session: sess } } = await supabase.auth.getSession();
+      
+      // On envoie le texte en JSON au backend Vercel
+      const res = await fetch("/api/generer-cours", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json", 
+          "Authorization": "Bearer " + sess.access_token 
+        },
+        body: JSON.stringify({ 
+          matiere: matiere.trim(), 
+          chapitre: chapitre.trim() || "Général",
+          fichiers: base64Files 
+        })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erreur serveur inconnu");
+      
+      // On ouvre la modale avec le texte généré (pas encore sauvegardé)
+      setPreviewModal({
+        matiere: matiere.trim(),
+        chapitre: chapitre.trim() || "Général",
+        texte: data.cours_markdown
+      });
+      
+      setFichiers([]);
+      setMatiere("");
+      setChapitre("");
+      setMsg("");
+    } catch (err) { 
+      setMsg("Erreur de l'IA : " + err.message); 
+    } finally { 
+      setBusy(false); 
+    }
+  }
+
+  // 2. Sauvegarder la synthèse dans la base de données (Privée ou Publique)
+  async function sauvegarderFiche(isPublic) {
+    if (!previewModal) return;
     setBusy(true);
-    const { error } = await supabase.auth.updateUser({ data: { prenom: nvPrenom.trim() } });
-    if (error) setMsg("Erreur: " + error.message);
-    else setMsg("Profil mis à jour ! 👑 (Rechargez la page si besoin)");
+    
+    const { error } = await supabase.from("fiches_ia").insert({
+      matiere: previewModal.matiere,
+      chapitre: previewModal.chapitre,
+      contenu: previewModal.texte,
+      auteur: prenom,
+      is_public: isPublic
+    });
+
     setBusy(false);
+    if (error) {
+      alert("Erreur lors de la sauvegarde : " + error.message);
+    } else {
+      setPreviewModal(null);
+      chargerFiches();
+    }
+  }
+
+  async function supprimerFiche(id) {
+    if (!confirm("Supprimer cette fiche définitivement ?")) return;
+    await supabase.from("fiches_ia").delete().eq("id", id);
+    chargerFiches();
   }
 
   return (
-    <div className="card" style={{ maxWidth: 500, margin: "0 auto" }}>
-      <h2>Mon Profil</h2>
-      <form onSubmit={updateProfil}>
-        <div className="row">
-          <label>Prénom affiché
-            <input required value={nvPrenom} onChange={e => setNvPrenom(e.target.value)} />
-          </label>
-        </div>
-        <button className="btn full" disabled={busy || !nvPrenom} style={{ marginTop: 20 }}>
-          {busy ? "Mise à jour..." : "Enregistrer"}
-        </button>
-        {msg && <p className="msg">{msg}</p>}
-      </form>
-    </div>
-  );
-}
+    <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
+      
+      <section className="card" style={{ marginBottom: 32, background: "linear-gradient(145deg, #0d2a6e 0%, #071229 100%)", borderColor: "var(--accent)" }}>
+        <h2>✨ Générer une fiche de révision IA</h2>
+        <p className="muted" style={{ fontSize: 14, marginBottom: 20 }}>
+          Glisse tes propres notes ou les PDF du prof. L'IA les lira et créera un résumé clair. 
+          <strong> Le PDF original ne sera jamais sauvegardé ni partagé.</strong>
+        </p>
+        
+        <form onSubmit={genererSynthese}>
+          <div className="row">
+            <label>Matière concernée
+              <input value={matiere} onChange={(e) => setMatiere(e.target.value)} placeholder="Ex: Finance d'entreprise" list="matieres-list" />
+              <datalist id="matieres-list">{matieresExistantes.map(m => <option key={m} value={m} />)}</datalist>
+            </label>
+            <label>Chapitre / Thème
+              <input value={chapitre} onChange={(e) => setChapitre(e.target.value)} placeholder="Ex: Chapitre 2 - Les taux" />
+            </label>
+          </div>
+          
+          <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
+            <div style={{ fontSize: 32 }}>⬆️</div>
+            <strong>Glisse les PDF ou photos ici</strong><span>ou touche pour parcourir</span>
+            <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => ajouterFichiers(e.target.files)} />
+          </div>
+          
+          {fichiers.length > 0 && (
+            <ul className="files">
+              {fichiers.map((f, i) => (
+                <li key={i}><span>{f.name}</span><button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button></li>
+              ))}
+            </ul>
+          )}
+          
+          <button className="btn full" disabled={busy || !matiere || fichiers.length === 0} style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }}>
+            {busy ? <span className="spin-emoji">🤖</span> : "✨ Générer la Fiche avec Gemini"}
+          </button>
+          {msg && <p className="msg">{msg}</p>}
+        </form>
+      </section>
 
-function AdminPlaceholderView({ title, isAdmin }) {
-  return (
-    <div className="placeholder-view">
-      <h2>{title}</h2>
-      {isAdmin ? (
-        <div className="admin-panel card" style={{ maxWidth: 600, margin: "24px auto", textAlign: "left" }}>
-          <h3 style={{ color: "var(--accent)", marginBottom: 12 }}>👑 Espace Administrateur</h3>
-          <p>Vous êtes connecté en tant que Davesh. Vous pourrez bientôt modifier cette section.</p>
+      <section>
+        <h2 style={{ marginBottom: 24 }}>Fiches de la classe & Privées</h2>
+        {matieresExistantes.length === 0 ? (
+          <div className="card empty-state"><p className="muted">Aucune fiche n'a encore été générée.</p></div>
+        ) : (
+          <div className="grid">
+            {matieresExistantes.map((m) => {
+              const totalFiches = Object.values(parMatiereEtChapitre[m]).flat().length;
+              return (
+                <div className="card" key={m} style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div className="head">
+                    <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{totalFiches} fiches</span>
+                  </div>
+                  <div style={{ flex: 1, maxHeight: '250px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {Object.keys(parMatiereEtChapitre[m]).map(chap => (
+                      <div key={chap} className="chapitre-group">
+                        <div className="chapitre-title">📁 {chap}</div>
+                        <ul className="list" style={{ marginBottom: 0 }}>
+                          {parMatiereEtChapitre[m][chap].map((f) => (
+                            <li key={f.id} style={{ cursor: "pointer", transition: "0.2s" }} onClick={() => setLectureModal(f)}>
+                              <div style={{ paddingRight: "10px", minWidth: 0 }}>
+                                <b style={{ display: "block", wordBreak: "break-word", fontSize: "14px", lineHeight: "1.3", marginBottom: "4px" }}>
+                                  Synthèse IA - {f.auteur}
+                                </b>
+                                <small>
+                                  {new Date(f.created_at).toLocaleDateString("fr-FR")} 
+                                  {f.is_public ? " 🌍 (Public)" : " 🔒 (Privé)"}
+                                </small>
+                              </div>
+                              <div className="right">
+                                {(f.auteur === prenom || isAdmin) && (
+                                  <button className="action-btn x" onClick={(e) => { e.stopPropagation(); supprimerFiche(f.id); }} title="Supprimer">🗑</button>
+                                )}
+                                <span style={{ fontSize: "16px" }}>📖</span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* MODALE 1 : PREVIEW (Juste après la génération de l'IA, avant sauvegarde) */}
+      {previewModal && (
+        <div className="modal" onClick={() => { if(confirm("Quitter sans sauvegarder la fiche ?")) setPreviewModal(null); }}>
+          <div className="modal-card" style={{ maxWidth: 800, width: "90%", display: "flex", flexDirection: "column", maxHeight: "90vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-bar" style={{ background: "linear-gradient(135deg, #8b5cf6, #3b82f6)" }} />
+            
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h3 style={{ margin: 0 }}>✨ Voici ta synthèse ({previewModal.matiere})</h3>
+              <button className="action-btn x" onClick={() => { if(confirm("Quitter sans sauvegarder la fiche ?")) setPreviewModal(null); }} style={{ fontSize: 20 }}>✕</button>
+            </div>
+
+            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: "1.6", fontSize: "15px" }}>
+              {previewModal.texte}
+            </div>
+            
+            <div className="form-2" style={{ marginTop: 20 }}>
+              <button className="btn ghost full" disabled={busy} onClick={() => sauvegarderFiche(false)}>
+                🔒 Sauvegarder pour moi
+              </button>
+              <button className="btn full" disabled={busy} style={{ background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} onClick={() => sauvegarderFiche(true)}>
+                🌍 Partager à la classe
+              </button>
+            </div>
+          </div>
         </div>
-      ) : (
-        <p className="muted" style={{ marginTop: 20 }}>Rien à afficher pour le moment.</p>
+      )}
+
+      {/* MODALE 2 : LECTURE D'UNE FICHE DEJA ENREGISTREE */}
+      {lectureModal && (
+        <div className="modal" onClick={() => setLectureModal(null)}>
+          <div className="modal-card" style={{ maxWidth: 800, width: "90%", display: "flex", flexDirection: "column", maxHeight: "90vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-bar" style={{ background: "var(--accent)" }} />
+            
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div>
+                <h3 style={{ margin: 0 }}>{lectureModal.matiere} - {lectureModal.chapitre}</h3>
+                <small className="muted">Généré par {lectureModal.auteur} {lectureModal.is_public ? "🌍" : "🔒"}</small>
+              </div>
+              <button className="action-btn x" onClick={() => setLectureModal(null)} style={{ fontSize: 20 }}>✕</button>
+            </div>
+
+            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: "1.6", fontSize: "15px" }}>
+              {lectureModal.contenu}
+            </div>
+            
+            <button className="btn full" style={{ marginTop: 20 }} onClick={() => setLectureModal(null)}>Fermer</button>
+          </div>
+        </div>
       )}
     </div>
   );
 }
+
 
 /* ---------------- Vue PLANNING (grille de la semaine) ---------------- */
 const PX_HEURE = 60;
@@ -814,356 +970,6 @@ function parseICSDate(str) {
   return z ? new Date(Date.UTC(...n)) : new Date(...n);
 }
 
-/* ---------------- Vue Cours (Dépôt collaboratif et liste) ---------------- */
-function CoursView({ session, prenom, isAdmin }) {
-  const [cours, setCours] = useState([]);
-  
-  // Champs pour l'ajout de fichier
-  const [nomCoursAdmin, setNomCoursAdmin] = useState(""); 
-  const [nomChapitreAdmin, setNomChapitreAdmin] = useState(""); 
-  
-  const [fichiers, setFichiers] = useState([]);
-  const [drag, setDrag] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-  
-  const [iaModal, setIaModal] = useState(null); 
-  const [editModal, setEditModal] = useState(null);
-  
-  const inputRef = useRef(null);
-
-  async function charger() {
-    const { data } = await supabase.from("cours").select("*").order("created_at", { ascending: false });
-    if (data) setCours(data);
-  }
-  
-  useEffect(() => { charger(); }, []);
-
-  // --- LOGIQUE DE GROUPEMENT PAR MATIERE ET CHAPITRE ---
-  const matieresExistantes = useMemo(() => [...new Set(cours.map(c => c.matiere))], [cours]);
-  
-  const parMatiereEtChapitre = useMemo(() => {
-    const m = {};
-    matieresExistantes.forEach(mat => { m[mat] = {}; });
-    cours.forEach(c => {
-      const mat = c.matiere;
-      const chap = c.chapitre || "Général"; 
-      if (!m[mat][chap]) m[mat][chap] = [];
-      m[mat][chap].push(c);
-    });
-    return m;
-  }, [cours, matieresExistantes]);
-
-  const ajouterFichiers = (list) => {
-    const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
-    setFichiers((prev) => [...prev, ...ok]);
-  };
-
-  // --- DEPOT DES FICHIERS ---
-  async function deposer(e) {
-    e.preventDefault();
-    
-    const matiereCible = nomCoursAdmin.trim();
-    const chapitreCible = nomChapitreAdmin.trim();
-
-    if (!matiereCible || !fichiers.length) return setMsg("Sélectionne une matière et ajoute au moins un fichier.");
-    
-    const finalChapitre = chapitreCible || "Général";
-    
-    setBusy(true); setMsg("");
-    try {
-      for (const f of fichiers) {
-        const path = `${session.user.id}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        const up = await supabase.storage.from("cours").upload(path, f);
-        if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ 
-            matiere: matiereCible, 
-            chapitre: finalChapitre,
-            auteur: prenom, 
-            fichier: path, 
-            fichier_name: f.name 
-        });
-        if (ins.error) throw ins.error;
-      }
-      setFichiers([]); 
-      setNomCoursAdmin("");
-      setNomChapitreAdmin("");
-      setMsg("Fichiers déposés avec succès ✨"); 
-      charger();
-    } catch (err) { setMsg("Erreur : " + err.message); } finally { setBusy(false); }
-  }
-
-  async function supprimer(c) {
-    if (!confirm("Admin: Supprimer ce fichier définitivement ?")) return;
-    await supabase.storage.from("cours").remove([c.fichier]);
-    await supabase.from("cours").delete().eq("id", c.id);
-    charger();
-  }
-
-  // --- MODIFICATION D'UN FICHIER ---
-  async function sauvegarderEdition() {
-    if (!editModal.fichier_name.trim() || !editModal.matiere.trim()) return;
-    
-    setBusy(true);
-    const { error } = await supabase.from("cours").update({ 
-      fichier_name: editModal.fichier_name.trim(), 
-      matiere: editModal.matiere.trim(),
-      chapitre: editModal.chapitre.trim() || "Général"
-    }).eq("id", editModal.id);
-    
-    setBusy(false);
-    if (!error) {
-      setEditModal(null);
-      charger();
-    } else {
-      alert("Erreur lors de la modification : " + error.message);
-    }
-  }
-
-  async function genererCoursIA(matiere) {
-    setIaModal({ matiere, texte: "", loading: true }); 
-    
-    try {
-         const { data: { session: sess } } = await supabase.auth.getSession();
-         const res = await fetch("/api/generer-cours", {
-         method: "POST",
-         headers: { "Content-Type": "application/json", Authorization: "Bearer " + sess.access_token },
-        body: JSON.stringify({ matiere })
-      });
-      
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Erreur serveur inconnu");
-      
-      setIaModal({ matiere, texte: data.cours_markdown, loading: false });
-    } catch (err) {
-      setIaModal({ matiere, texte: "Erreur lors de la génération : " + err.message, loading: false });
-    }
-  }
-
-  async function telechargerFichier(cheminFichier) {
-      const { data, error } = await supabase.storage.from('cours').createSignedUrl(cheminFichier, 60);
-      if (error) {
-          alert("Erreur lors de la récupération du fichier : " + error.message);
-          return;
-      }
-      window.open(data.signedUrl, '_blank');
-  }
-
-  return (
-    <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
-      
-      <section id="depot" className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
-        <h2>👑 Ajouter un cours (Admin)</h2>
-        
-          <form onSubmit={deposer}>
-            <div className="row" style={{ marginTop: 16 }}>
-              <label>Matière
-                  <input 
-                    value={nomCoursAdmin} 
-                    onChange={(e) => setNomCoursAdmin(e.target.value)} 
-                    placeholder="Créer/Sélectionner une matière (ex: Base de données)" 
-                    list="admin-matieres-list"
-                  />
-                  <datalist id="admin-matieres-list">
-                    {matieresExistantes.map(m => <option key={m} value={m} />)}
-                  </datalist>
-              </label>
-
-              <label>Dossier / Chapitre
-                  <input 
-                    value={nomChapitreAdmin} 
-                    onChange={(e) => setNomChapitreAdmin(e.target.value)} 
-                    placeholder="Ex: Séance 7 - Cas Renault" 
-                  />
-              </label>
-            </div>
-            
-            <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
-              <div style={{ fontSize: 32 }}>⬆️</div>
-              <strong>Glisse tes photos ou PDF ici</strong><span>ou touche pour choisir</span>
-              <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => ajouterFichiers(e.target.files)} />
-            </div>
-            {fichiers.length > 0 && (
-              <ul className="files">
-                {fichiers.map((f, i) => (
-                  <li key={i}><span>{f.name}</span><button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button></li>
-                ))}
-              </ul>
-            )}
-            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi en cours…" : "Partager les fichiers"}</button>
-            {msg && <p className="msg">{msg}</p>}
-          </form>
-      </section>
-
-      <section>
-        <h2 style={{ marginBottom: 24 }}>Cours de la classe</h2>
-        {matieresExistantes.length === 0 ? (
-          <div className="card empty-state"><p className="muted">Aucun fichier n'a été publié pour le moment.</p></div>
-        ) : (
-          <div className="grid">
-            {matieresExistantes.map((m) => {
-              const totalFichiersMatiere = Object.values(parMatiereEtChapitre[m]).flat().length;
-              return (
-                <div className="card" key={m} style={{ display: 'flex', flexDirection: 'column' }}>
-                  <div className="head">
-                    <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{totalFichiersMatiere} fichiers</span>
-                  </div>
-                  
-                  <div style={{ flex: 1, maxHeight: '250px', overflowY: 'auto', paddingRight: '4px' }}>
-                    {Object.keys(parMatiereEtChapitre[m]).map(chap => (
-                      <div key={chap} className="chapitre-group">
-                        <div className="chapitre-title">📁 {chap}</div>
-                        <ul className="list" style={{ marginBottom: 0 }}>
-                          {parMatiereEtChapitre[m][chap].map((c) => {
-                            const nomAffichage = c.fichier_name || c.fichier.split('-').slice(1).join('-') || "Document sans nom";
-                            
-                            return (
-                              <li key={c.id}>
-                                <div style={{ paddingRight: "10px", minWidth: 0 }}>
-                                  <b style={{ display: "block", wordBreak: "break-word", fontSize: "14px", lineHeight: "1.3", marginBottom: "4px" }}>
-                                    {nomAffichage}
-                                  </b>
-                                  <small>Ajouté le {new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
-                                </div>
-                                <div className="right" style={{ flexShrink: 0 }}>
-                                  {isAdmin && (
-                                      <>
-                                          <button 
-                                            className="action-btn" 
-                                            onClick={() => setEditModal({ id: c.id, fichier_name: nomAffichage, matiere: c.matiere, chapitre: c.chapitre || "Général" })} 
-                                            title="Éditer le document"
-                                          >
-                                            ✏️
-                                          </button>
-                                          <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
-                                      </>
-                                  )}
-                                  <button 
-                                      className="action-btn ok" 
-                                      style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
-                                      onClick={() => telechargerFichier(c.fichier)}
-                                      title="Ouvrir / Télécharger le document"
-                                  >
-                                      📄
-                                  </button>
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                  
-                  {isAdmin && (
-                    <button 
-                      className="btn full" 
-                      style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} 
-                      onClick={() => genererCoursIA(m)}
-                    >
-                      ✨ Générer le cours avec l'IA
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* MODALE POUR MODIFIER UN DOCUMENT (RENOMMER / DEPLACER) */}
-      {editModal && (
-        <div className="modal" onClick={() => setEditModal(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-bar" style={{ background: "var(--accent)" }} />
-            <h3>✏️ Modifier le document</h3>
-            
-            <label style={{ marginTop: 16 }}>Nom du fichier
-              <input 
-                value={editModal.fichier_name} 
-                onChange={(e) => setEditModal({...editModal, fichier_name: e.target.value})} 
-                placeholder="Ex: Chapitre 1 - Introduction"
-              />
-            </label>
-            
-            <label style={{ marginTop: 16 }}>Matière
-              <input 
-                value={editModal.matiere} 
-                onChange={(e) => setEditModal({...editModal, matiere: e.target.value})} 
-                list="edit-matieres-list"
-              />
-              <datalist id="edit-matieres-list">
-                {matieresExistantes.map(m => <option key={m} value={m} />)}
-              </datalist>
-            </label>
-
-            <label style={{ marginTop: 16 }}>Dossier / Chapitre
-              <input 
-                value={editModal.chapitre} 
-                onChange={(e) => setEditModal({...editModal, chapitre: e.target.value})} 
-                placeholder="Ex: Séance 7"
-              />
-            </label>
-
-            <div className="form-2" style={{ marginTop: 24 }}>
-              <button className="btn full" disabled={busy} onClick={sauvegarderEdition}>
-                {busy ? "..." : "Enregistrer"}
-              </button>
-              <button className="btn ghost full" style={{ marginTop: 0 }} onClick={() => setEditModal(null)}>
-                Annuler
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODALE POUR AFFICHER LE RESULTAT IA */}
-      {iaModal && (
-        <div className="modal" onClick={() => setIaModal(null)}>
-          <div className="modal-card" style={{ maxWidth: 800, width: "90%" }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-bar" style={{ background: "linear-gradient(135deg, #8b5cf6, #3b82f6)" }} />
-            
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-              <h3 style={{ margin: 0 }}>✨ Synthèse IA : {iaModal.matiere}</h3>
-              <button className="action-btn x" onClick={() => setIaModal(null)} style={{ fontSize: 20 }}>✕</button>
-            </div>
-
-            {iaModal.loading ? (
-              <div style={{ padding: "40px 0", textAlign: "center" }}>
-                <div style={{ fontSize: 40, marginBottom: 16 }} className="spin-emoji">🤖</div>
-                <h4 style={{ margin: 0 }}>Gemini lit les notes de la classe...</h4>
-                <p className="muted">Cela peut prendre entre 10 et 30 secondes selon le nombre d'images.</p>
-              </div>
-            ) : (
-              <div style={{ 
-                background: "rgba(0,0,0,0.2)", 
-                padding: "20px", 
-                borderRadius: "12px", 
-                border: "1px solid var(--border)",
-                maxHeight: "60vh",
-                overflowY: "auto",
-                whiteSpace: "pre-wrap",
-                lineHeight: "1.6",
-                fontSize: "15px"
-              }}>
-                {iaModal.texte}
-              </div>
-            )}
-            
-            {!iaModal.loading && (
-              <button className="btn full" style={{ marginTop: 20 }} onClick={() => {
-                alert("La fonction d'export PDF arrivera bientôt ! Tu peux déjà copier/coller le texte.");
-              }}>
-                📄 Exporter en PDF (Bientôt)
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ---------------- Styles CSS ---------------- */
 const css = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1217,12 +1023,9 @@ a:hover { text-decoration: underline; }
 .next-date span { font-size: 11px; text-transform: uppercase; color: var(--txt-muted); }
 .next-date b { font-size: 18px; }
 .next-title { font-weight: 600; }
-.badge { background: rgba(47,107,255,.15); color: var(--accent); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid rgba(47,107,255,.3); }
 
 .empty-state { text-align: center; padding: 40px 20px; }
 .empty-icon { font-size: 32px; margin-bottom: 12px; opacity: .7; }
-.placeholder-view { text-align: center; padding: 64px 20px; }
-.admin-panel-highlight { border: 1px solid var(--accent) !important; background: linear-gradient(180deg, rgba(47,107,255,.07) 0%, rgba(47,107,255,0) 100%); }
 
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
 .row { display: grid; gap: 16px; grid-template-columns: 1fr; }
@@ -1256,11 +1059,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 
 .list { list-style: none; display: grid; gap: 12px; margin-bottom: 12px; }
 .list li { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,.03); border-radius: 8px; }
+.list li:hover { background: rgba(255,255,255,.06); }
 .list small { display: block; color: var(--txt-muted); font-size: 12px; margin-top: 4px; }
-.list em { font-style: normal; font-size: 12px; padding: 4px 10px; border-radius: 20px; }
-.ok { background: rgba(34,197,94,.15); color: #4ade80; }
-.wait { background: rgba(255,255,255,.1); color: var(--txt-muted); }
-.right { display: flex; align-items: center; gap: 8px; }
 .action-btn { background: none; border: 0; cursor: pointer; filter: grayscale(1); opacity: .7; font-size: 14px; transition: .2s; }
 .action-btn:hover { filter: grayscale(0); opacity: 1; transform: scale(1.1); }
 .x:hover { color: var(--danger); }
@@ -1317,8 +1117,6 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .tag-manuel { margin-top: 12px; font-size: 12px; color: var(--accent); }
 .btn.danger { color: var(--danger); }
 
-.primary-card .dash-card-header { margin-bottom: 16px; }
-.primary-card .dash-card-header h3 { margin-bottom: 0; }
 .date-item + .date-item { margin-top: 10px; }
 .date-badge { width: 46px; height: 50px; flex: none; border-radius: 12px; background: rgba(255,255,255,.14); display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
 .date-badge span { font-size: 11px; text-transform: uppercase; opacity: .75; }
@@ -1339,6 +1137,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .spin-emoji { display: inline-block; animation: spin 2s linear infinite; }
+
+.markdown-body h1, .markdown-body h2 { color: #fff; margin-top: 1em; margin-bottom: 0.5em; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; }
+.markdown-body ul, .markdown-body ol { padding-left: 20px; margin-bottom: 1em; }
+.markdown-body li { margin-bottom: 4px; }
+.markdown-body strong { color: var(--accent); }
 
 @media (max-width: 768px) {
   .desktop-only { display: none !important; }
