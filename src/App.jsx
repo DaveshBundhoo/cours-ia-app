@@ -896,15 +896,20 @@ function AnnuaireView({ isAdmin }) {
 /* ---------------- Vue Cours (Dépôt collaboratif et liste) ---------------- */
 function CoursView({ session, prenom, isAdmin }) {
   const [cours, setCours] = useState([]);
+  
+  // Champs pour l'ajout de fichier
   const [nomCoursAdmin, setNomCoursAdmin] = useState(""); 
+  const [nomChapitreAdmin, setNomChapitreAdmin] = useState(""); 
   const [matiereChoisie, setMatiereChoisie] = useState(""); 
+  const [chapitreChoisi, setChapitreChoisi] = useState(""); 
+  
   const [fichiers, setFichiers] = useState([]);
   const [drag, setDrag] = useState(false);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   
   const [iaModal, setIaModal] = useState(null); 
-  const [editModal, setEditModal] = useState(null); // Gère la modification d'un document (nom + matière)
+  const [editModal, setEditModal] = useState(null);
   
   const inputRef = useRef(null);
 
@@ -915,31 +920,58 @@ function CoursView({ session, prenom, isAdmin }) {
   
   useEffect(() => { charger(); }, []);
 
+  // --- LOGIQUE DE GROUPEMENT PAR MATIERE ET CHAPITRE ---
   const matieresExistantes = useMemo(() => [...new Set(cours.map(c => c.matiere))], [cours]);
-  const parMatiere = useMemo(() => {
+  
+  const parMatiereEtChapitre = useMemo(() => {
     const m = {};
-    matieresExistantes.forEach((x) => (m[x] = []));
-    cours.forEach((c) => (m[c.matiere] ||= []).push(c));
+    matieresExistantes.forEach(mat => { m[mat] = {}; });
+    cours.forEach(c => {
+      const mat = c.matiere;
+      const chap = c.chapitre || "Général"; // "Général" par défaut si aucun chapitre n'est précisé
+      if (!m[mat][chap]) m[mat][chap] = [];
+      m[mat][chap].push(c);
+    });
     return m;
   }, [cours, matieresExistantes]);
 
+  // Liste des chapitres disponibles pour la matière sélectionnée (étudiants)
+  const chapitresPourMatiereChoisie = useMemo(() => {
+    if (!matiereChoisie) return [];
+    const chaps = cours.filter(c => c.matiere === matiereChoisie).map(c => c.chapitre || "Général");
+    return [...new Set(chaps)];
+  }, [cours, matiereChoisie]);
+
+  // Sélections par défaut
   useEffect(() => {
     if (!isAdmin && !matiereChoisie && matieresExistantes.length > 0) {
       setMatiereChoisie(matieresExistantes[0]);
     }
   }, [matieresExistantes, isAdmin, matiereChoisie]);
 
+  useEffect(() => {
+    if (!isAdmin && chapitresPourMatiereChoisie.length > 0) {
+      if (!chapitresPourMatiereChoisie.includes(chapitreChoisi)) {
+        setChapitreChoisi(chapitresPourMatiereChoisie[0]);
+      }
+    }
+  }, [chapitresPourMatiereChoisie, isAdmin, chapitreChoisi]);
+
   const ajouterFichiers = (list) => {
     const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
     setFichiers((prev) => [...prev, ...ok]);
   };
 
+  // --- DEPOT DES FICHIERS ---
   async function deposer(e) {
     e.preventDefault();
     
     const matiereCible = isAdmin ? nomCoursAdmin.trim() : matiereChoisie;
+    const chapitreCible = isAdmin ? nomChapitreAdmin.trim() : chapitreChoisi;
 
     if (!matiereCible || !fichiers.length) return setMsg("Sélectionne une matière et ajoute au moins un fichier.");
+    
+    const finalChapitre = chapitreCible || "Général";
     
     setBusy(true); setMsg("");
     try {
@@ -947,11 +979,20 @@ function CoursView({ session, prenom, isAdmin }) {
         const path = `${session.user.id}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         const up = await supabase.storage.from("cours").upload(path, f);
         if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ matiere: matiereCible, auteur: prenom, fichier: path, fichier_name: f.name });
+        const ins = await supabase.from("cours").insert({ 
+            matiere: matiereCible, 
+            chapitre: finalChapitre,
+            auteur: prenom, 
+            fichier: path, 
+            fichier_name: f.name 
+        });
         if (ins.error) throw ins.error;
       }
       setFichiers([]); 
-      if (isAdmin) setNomCoursAdmin(""); 
+      if (isAdmin) {
+          setNomCoursAdmin("");
+          setNomChapitreAdmin("");
+      }
       setMsg("Fichiers déposés avec succès ✨"); 
       charger();
     } catch (err) { setMsg("Erreur : " + err.message); } finally { setBusy(false); }
@@ -964,14 +1005,15 @@ function CoursView({ session, prenom, isAdmin }) {
     charger();
   }
 
-  // --- NOUVELLE FONCTION D'EDITION (Renommer + Déplacer) ---
+  // --- MODIFICATION D'UN FICHIER ---
   async function sauvegarderEdition() {
     if (!editModal.fichier_name.trim() || !editModal.matiere.trim()) return;
     
     setBusy(true);
     const { error } = await supabase.from("cours").update({ 
       fichier_name: editModal.fichier_name.trim(), 
-      matiere: editModal.matiere.trim() 
+      matiere: editModal.matiere.trim(),
+      chapitre: editModal.chapitre.trim() || "Général"
     }).eq("id", editModal.id);
     
     setBusy(false);
@@ -1029,7 +1071,8 @@ function CoursView({ session, prenom, isAdmin }) {
                   <input 
                     value={nomCoursAdmin} 
                     onChange={(e) => setNomCoursAdmin(e.target.value)} 
-                    placeholder="Créer une nouvelle matière (ex: Base de données)" 
+                    placeholder="Créer/Sélectionner une matière (ex: Base de données)" 
+                    list="admin-matieres-list"
                   />
                 ) : (
                   <select 
@@ -1041,8 +1084,34 @@ function CoursView({ session, prenom, isAdmin }) {
                     ))}
                   </select>
                 )}
+                {/* Autocomplétion pour l'admin */}
+                {isAdmin && (
+                  <datalist id="admin-matieres-list">
+                    {matieresExistantes.map(m => <option key={m} value={m} />)}
+                  </datalist>
+                )}
+              </label>
+
+              <label>Dossier / Chapitre
+                {isAdmin ? (
+                  <input 
+                    value={nomChapitreAdmin} 
+                    onChange={(e) => setNomChapitreAdmin(e.target.value)} 
+                    placeholder="Ex: Séance 7 - Cas Renault" 
+                  />
+                ) : (
+                  <select 
+                    value={chapitreChoisi} 
+                    onChange={(e) => setChapitreChoisi(e.target.value)}
+                  >
+                    {chapitresPourMatiereChoisie.map(ch => (
+                      <option key={ch} value={ch}>{ch}</option>
+                    ))}
+                  </select>
+                )}
               </label>
             </div>
+            
             <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
               <div style={{ fontSize: 32 }}>⬆️</div>
               <strong>Glisse tes photos ou PDF ici</strong><span>ou touche pour choisir</span>
@@ -1067,71 +1136,80 @@ function CoursView({ session, prenom, isAdmin }) {
           <div className="card empty-state"><p className="muted">Aucun fichier n'a été publié pour le moment.</p></div>
         ) : (
           <div className="grid">
-            {matieresExistantes.map((m) => (
-              <div className="card" key={m} style={{ display: 'flex', flexDirection: 'column' }}>
-                <div className="head">
-                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{parMatiere[m].length} fichiers</span>
-                </div>
-                <ul className="list" style={{ flex: 1, maxHeight: '250px', overflowY: 'auto' }}>
-                  {parMatiere[m].map((c) => {
-                    // Fallback si fichier_name est vide (pour les vieux fichiers)
-                    const nomAffichage = c.fichier_name || c.fichier.split('-').slice(1).join('-') || "Document sans nom";
-                    
-                    return (
-                      <li key={c.id}>
-                        <div style={{ paddingRight: "10px", minWidth: 0 }}>
-                          {/* L'AUTEUR EST CACHÉ, LE NOM DU FICHIER EST AFFICHÉ À LA PLACE */}
-                          <b style={{ display: "block", wordBreak: "break-word", fontSize: "14px", lineHeight: "1.3", marginBottom: "4px" }}>
-                            {nomAffichage}
-                          </b>
-                          <small>Ajouté le {new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
-                        </div>
-                        <div className="right" style={{ flexShrink: 0 }}>
-                          {isAdmin && (
-                              <>
+            {matieresExistantes.map((m) => {
+              const totalFichiersMatiere = Object.values(parMatiereEtChapitre[m]).flat().length;
+              return (
+                <div className="card" key={m} style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div className="head">
+                    <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{totalFichiersMatiere} fichiers</span>
+                  </div>
+                  
+                  <div style={{ flex: 1, maxHeight: '250px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {Object.keys(parMatiereEtChapitre[m]).map(chap => (
+                      <div key={chap} className="chapitre-group">
+                        <div className="chapitre-title">📁 {chap}</div>
+                        <ul className="list" style={{ marginBottom: 0 }}>
+                          {parMatiereEtChapitre[m][chap].map((c) => {
+                            const nomAffichage = c.fichier_name || c.fichier.split('-').slice(1).join('-') || "Document sans nom";
+                            
+                            return (
+                              <li key={c.id}>
+                                <div style={{ paddingRight: "10px", minWidth: 0 }}>
+                                  <b style={{ display: "block", wordBreak: "break-word", fontSize: "14px", lineHeight: "1.3", marginBottom: "4px" }}>
+                                    {nomAffichage}
+                                  </b>
+                                  <small>Ajouté le {new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
+                                </div>
+                                <div className="right" style={{ flexShrink: 0 }}>
+                                  {isAdmin && (
+                                      <>
+                                          <button 
+                                            className="action-btn" 
+                                            onClick={() => setEditModal({ id: c.id, fichier_name: nomAffichage, matiere: c.matiere, chapitre: c.chapitre || "Général" })} 
+                                            title="Éditer le document"
+                                          >
+                                            ✏️
+                                          </button>
+                                          <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
+                                      </>
+                                  )}
                                   <button 
-                                    className="action-btn" 
-                                    onClick={() => setEditModal({ id: c.id, fichier_name: nomAffichage, matiere: c.matiere })} 
-                                    title="Renommer ou déplacer"
+                                      className="action-btn ok" 
+                                      style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
+                                      onClick={() => telechargerFichier(c.fichier)}
+                                      title="Ouvrir / Télécharger le document"
                                   >
-                                    ✏️
+                                      📄
                                   </button>
-                                  <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
-                              </>
-                          )}
-                          <button 
-                              className="action-btn ok" 
-                              style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
-                              onClick={() => telechargerFichier(c.fichier)}
-                              title="Ouvrir / Télécharger le document"
-                          >
-                              📄
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-                
-                {isAdmin ? (
-                  <button 
-                    className="btn full" 
-                    style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} 
-                    onClick={() => genererCoursIA(m)}
-                  >
-                    ✨ Générer le cours avec l'IA
-                  </button>
-                ) : (
-                  <button 
-                    className="btn ghost full" 
-                    style={{ marginTop: 16 }} 
-                    onClick={() => alert("Seul l'administrateur peut générer la synthèse finale du cours.")}
-                  >
-                    ⏳ Synthèse IA en attente
-                  </button>
-                )}
-              </div>
-            ))}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {isAdmin ? (
+                    <button 
+                      className="btn full" 
+                      style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} 
+                      onClick={() => genererCoursIA(m)}
+                    >
+                      ✨ Générer le cours avec l'IA
+                    </button>
+                  ) : (
+                    <button 
+                      className="btn ghost full" 
+                      style={{ marginTop: 16 }} 
+                      onClick={() => alert("Seul l'administrateur peut générer la synthèse finale du cours.")}
+                    >
+                      ⏳ Synthèse IA en attente
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -1151,15 +1229,23 @@ function CoursView({ session, prenom, isAdmin }) {
               />
             </label>
             
-            <label style={{ marginTop: 16 }}>Déplacer dans un autre cours (optionnel)
+            <label style={{ marginTop: 16 }}>Matière
               <input 
                 value={editModal.matiere} 
                 onChange={(e) => setEditModal({...editModal, matiere: e.target.value})} 
-                list="matieres-list"
+                list="edit-matieres-list"
               />
-              <datalist id="matieres-list">
+              <datalist id="edit-matieres-list">
                 {matieresExistantes.map(m => <option key={m} value={m} />)}
               </datalist>
+            </label>
+
+            <label style={{ marginTop: 16 }}>Dossier / Chapitre
+              <input 
+                value={editModal.chapitre} 
+                onChange={(e) => setEditModal({...editModal, chapitre: e.target.value})} 
+                placeholder="Ex: Séance 7"
+              />
             </label>
 
             <div className="form-2" style={{ marginTop: 24 }}>
@@ -1306,6 +1392,11 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .count { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px 10px; font-size: 12px; }
 .muted { color: var(--txt-muted); }
 .msg { margin-top: 16px; font-size: 14px; color: var(--accent); text-align: center; }
+
+/* -- Nouveaux styles pour les dossiers/chapitres -- */
+.chapitre-group { margin-bottom: 12px; }
+.chapitre-title { font-size: 13px; font-weight: 600; color: var(--txt-muted); margin-bottom: 8px; margin-left: 4px; display: flex; align-items: center; gap: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
 .list { list-style: none; display: grid; gap: 12px; margin-bottom: 12px; }
 .list li { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,.03); border-radius: 8px; }
 .list small { display: block; color: var(--txt-muted); font-size: 12px; margin-top: 4px; }
