@@ -213,10 +213,17 @@ function Layout({ session }) {
   const prenom = meta.prenom || session.user.email.split('@')[0];
   const isAdmin = prenom.trim().toLowerCase() === "davesh";
 
+  // Redirection automatique si un non-admin essaie d'aller sur l'onglet Cours
+  useEffect(() => {
+    if (!isAdmin && activeTab === "Cours") {
+      setActiveTab("Accueil");
+    }
+  }, [isAdmin, activeTab]);
+
   const NAV_ITEMS = [
     { id: "Accueil", icon: "home" },
     { id: "Planning", icon: "cal" },
-    { id: "Cours", icon: "book" },
+    ...(isAdmin ? [{ id: "Cours", icon: "book" }] : []), // Affiche "Cours" seulement pour l'admin
     { id: "Date importante", icon: "star" },
     { id: "Adresse mail important", icon: "mail" },
   ];
@@ -262,7 +269,7 @@ function Layout({ session }) {
         <div className="scroll-area">
           {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} setActiveTab={setActiveTab} />}
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
-          {activeTab === "Cours" && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Cours" && isAdmin && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />} {/* Protection de la vue Cours */}
           {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
           {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
           {activeTab === "Date importante" && <DatesView isAdmin={isAdmin} />}
@@ -900,8 +907,6 @@ function CoursView({ session, prenom, isAdmin }) {
   // Champs pour l'ajout de fichier
   const [nomCoursAdmin, setNomCoursAdmin] = useState(""); 
   const [nomChapitreAdmin, setNomChapitreAdmin] = useState(""); 
-  const [matiereChoisie, setMatiereChoisie] = useState(""); 
-  const [chapitreChoisi, setChapitreChoisi] = useState(""); 
   
   const [fichiers, setFichiers] = useState([]);
   const [drag, setDrag] = useState(false);
@@ -935,28 +940,6 @@ function CoursView({ session, prenom, isAdmin }) {
     return m;
   }, [cours, matieresExistantes]);
 
-  // Liste des chapitres disponibles pour la matière sélectionnée (étudiants)
-  const chapitresPourMatiereChoisie = useMemo(() => {
-    if (!matiereChoisie) return [];
-    const chaps = cours.filter(c => c.matiere === matiereChoisie).map(c => c.chapitre || "Général");
-    return [...new Set(chaps)];
-  }, [cours, matiereChoisie]);
-
-  // Sélections par défaut
-  useEffect(() => {
-    if (!isAdmin && !matiereChoisie && matieresExistantes.length > 0) {
-      setMatiereChoisie(matieresExistantes[0]);
-    }
-  }, [matieresExistantes, isAdmin, matiereChoisie]);
-
-  useEffect(() => {
-    if (!isAdmin && chapitresPourMatiereChoisie.length > 0) {
-      if (!chapitresPourMatiereChoisie.includes(chapitreChoisi)) {
-        setChapitreChoisi(chapitresPourMatiereChoisie[0]);
-      }
-    }
-  }, [chapitresPourMatiereChoisie, isAdmin, chapitreChoisi]);
-
   const ajouterFichiers = (list) => {
     const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
     setFichiers((prev) => [...prev, ...ok]);
@@ -966,8 +949,8 @@ function CoursView({ session, prenom, isAdmin }) {
   async function deposer(e) {
     e.preventDefault();
     
-    const matiereCible = isAdmin ? nomCoursAdmin.trim() : matiereChoisie;
-    const chapitreCible = isAdmin ? nomChapitreAdmin.trim() : chapitreChoisi;
+    const matiereCible = nomCoursAdmin.trim();
+    const chapitreCible = nomChapitreAdmin.trim();
 
     if (!matiereCible || !fichiers.length) return setMsg("Sélectionne une matière et ajoute au moins un fichier.");
     
@@ -989,10 +972,8 @@ function CoursView({ session, prenom, isAdmin }) {
         if (ins.error) throw ins.error;
       }
       setFichiers([]); 
-      if (isAdmin) {
-          setNomCoursAdmin("");
-          setNomChapitreAdmin("");
-      }
+      setNomCoursAdmin("");
+      setNomChapitreAdmin("");
       setMsg("Fichiers déposés avec succès ✨"); 
       charger();
     } catch (err) { setMsg("Erreur : " + err.message); } finally { setBusy(false); }
@@ -1056,59 +1037,29 @@ function CoursView({ session, prenom, isAdmin }) {
   return (
     <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
       
-      <section id="depot" className={`card ${isAdmin ? "admin-panel-highlight" : ""}`} style={{ marginBottom: 32 }}>
-        <h2>{isAdmin ? "👑 Ajouter un cours (Admin)" : "Partager un cours"}</h2>
+      <section id="depot" className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
+        <h2>👑 Ajouter un cours (Admin)</h2>
         
-        {!isAdmin && matieresExistantes.length === 0 ? (
-          <p className="muted" style={{ marginTop: 16 }}>
-            Aucune matière n'a encore été créée. Demandez à l'administrateur d'ajouter une matière avant de pouvoir partager vos fichiers.
-          </p>
-        ) : (
           <form onSubmit={deposer}>
             <div className="row" style={{ marginTop: 16 }}>
               <label>Matière
-                {isAdmin ? (
                   <input 
                     value={nomCoursAdmin} 
                     onChange={(e) => setNomCoursAdmin(e.target.value)} 
                     placeholder="Créer/Sélectionner une matière (ex: Base de données)" 
                     list="admin-matieres-list"
                   />
-                ) : (
-                  <select 
-                    value={matiereChoisie} 
-                    onChange={(e) => setMatiereChoisie(e.target.value)}
-                  >
-                    {matieresExistantes.map(m => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                )}
-                {/* Autocomplétion pour l'admin */}
-                {isAdmin && (
                   <datalist id="admin-matieres-list">
                     {matieresExistantes.map(m => <option key={m} value={m} />)}
                   </datalist>
-                )}
               </label>
 
               <label>Dossier / Chapitre
-                {isAdmin ? (
                   <input 
                     value={nomChapitreAdmin} 
                     onChange={(e) => setNomChapitreAdmin(e.target.value)} 
                     placeholder="Ex: Séance 7 - Cas Renault" 
                   />
-                ) : (
-                  <select 
-                    value={chapitreChoisi} 
-                    onChange={(e) => setChapitreChoisi(e.target.value)}
-                  >
-                    {chapitresPourMatiereChoisie.map(ch => (
-                      <option key={ch} value={ch}>{ch}</option>
-                    ))}
-                  </select>
-                )}
               </label>
             </div>
             
@@ -1127,7 +1078,6 @@ function CoursView({ session, prenom, isAdmin }) {
             <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi en cours…" : "Partager les fichiers"}</button>
             {msg && <p className="msg">{msg}</p>}
           </form>
-        )}
       </section>
 
       <section>
@@ -1190,21 +1140,13 @@ function CoursView({ session, prenom, isAdmin }) {
                     ))}
                   </div>
                   
-                  {isAdmin ? (
+                  {isAdmin && (
                     <button 
                       className="btn full" 
                       style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} 
                       onClick={() => genererCoursIA(m)}
                     >
                       ✨ Générer le cours avec l'IA
-                    </button>
-                  ) : (
-                    <button 
-                      className="btn ghost full" 
-                      style={{ marginTop: 16 }} 
-                      onClick={() => alert("Seul l'administrateur peut générer la synthèse finale du cours.")}
-                    >
-                      ⏳ Synthèse IA en attente
                     </button>
                   )}
                 </div>
