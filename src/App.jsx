@@ -194,7 +194,6 @@ const ICON_PATHS = {
   cal: "M7 3v4M17 3v4M4 9h16M5 5h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z",
   book: "M4 4.5A1.5 1.5 0 0 1 5.5 3H20v15H5.5A1.5 1.5 0 0 0 4 19.5zM4 19.5A1.5 1.5 0 0 0 5.5 21H20",
   star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z",
-  mail: "M3 6h18v12H3zM3 7l9 7 9-7",
   power: "M12 3v9M6.3 6.8a8 8 0 1 0 11.4 0",
 };
 function Icon({ n, size = 20 }) {
@@ -223,9 +222,8 @@ function Layout({ session }) {
   const NAV_ITEMS = [
     { id: "Accueil", icon: "home" },
     { id: "Planning", icon: "cal" },
-    ...(isAdmin ? [{ id: "Cours", icon: "book" }] : []), // Affiche "Cours" seulement pour l'admin
+    ...(isAdmin ? [{ id: "Cours", icon: "book" }] : []), 
     { id: "Date importante", icon: "star" },
-    { id: "Adresse mail important", icon: "mail" },
   ];
 
   return (
@@ -269,8 +267,7 @@ function Layout({ session }) {
         <div className="scroll-area">
           {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} setActiveTab={setActiveTab} />}
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
-          {activeTab === "Cours" && isAdmin && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />} {/* Protection de la vue Cours */}
-          {activeTab === "Adresse mail important" && <AnnuaireView isAdmin={isAdmin} />}
+          {activeTab === "Cours" && isAdmin && <CoursView session={session} prenom={prenom} isAdmin={isAdmin} />}
           {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
           {activeTab === "Date importante" && <DatesView isAdmin={isAdmin} />}
         </div>
@@ -817,89 +814,6 @@ function parseICSDate(str) {
   return z ? new Date(Date.UTC(...n)) : new Date(...n);
 }
 
-/* ---------------- Vue Annuaire ---------------- */
-function AnnuaireView({ isAdmin }) {
-  const [contacts, setContacts] = useState([]);
-  const [recherche, setRecherche] = useState("");
-  const [nom, setNom] = useState("");
-  const [role, setRole] = useState("");
-  const [email, setEmail] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  async function chargerAnnuaire() {
-    const { data } = await supabase.from("annuaire").select("*").order("nom", { ascending: true });
-    if (data) setContacts(data);
-  }
-
-  useEffect(() => { chargerAnnuaire(); }, []);
-
-  async function ajouterContact(e) {
-    e.preventDefault();
-    setBusy(true);
-    setMsg("");
-    const { error } = await supabase.from("annuaire").insert({ nom: nom.trim(), role: role.trim(), email: email.trim() });
-    if (error) setMsg("Erreur : " + error.message);
-    else { setMsg("Contact ajouté !"); setNom(""); setRole(""); setEmail(""); chargerAnnuaire(); }
-    setBusy(false);
-  }
-
-  async function supprimerContact(id) {
-    if (!confirm("Admin: Supprimer ce contact ?")) return;
-    await supabase.from("annuaire").delete().eq("id", id);
-    chargerAnnuaire();
-  }
-
-  const contactsFiltres = contacts.filter(c => 
-    c.nom.toLowerCase().includes(recherche.toLowerCase()) || (c.role && c.role.toLowerCase().includes(recherche.toLowerCase()))
-  );
-
-  return (
-    <div className="annuaire-view" style={{ maxWidth: 800, margin: "0 auto" }}>
-      {isAdmin && (
-        <section className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
-          <h2 style={{ marginBottom: 16 }}>👑 Ajouter un contact</h2>
-          <form onSubmit={ajouterContact}>
-            <div className="row">
-              <label>Nom complet <input required value={nom} onChange={(e) => setNom(e.target.value)} /></label>
-              <label>Rôle <input value={role} onChange={(e) => setRole(e.target.value)} /></label>
-              <label>Email <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-            </div>
-            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Ajout..." : "Ajouter à l'annuaire"}</button>
-            {msg && <p className="msg">{msg}</p>}
-          </form>
-        </section>
-      )}
-      <section>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
-          <h2 style={{ margin: 0 }}>Annuaire de l'école</h2>
-          <input type="text" placeholder="🔍 Rechercher..." value={recherche} onChange={(e) => setRecherche(e.target.value)} style={{ maxWidth: 300, margin: 0 }} />
-        </div>
-        {contacts.length === 0 ? (
-          <div className="card empty-state"><p className="muted">L'annuaire est vide pour le moment.</p></div>
-        ) : (
-          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-            {contactsFiltres.map(c => (
-              <div className="card" key={c.id} style={{ padding: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <h3 style={{ fontSize: 18, marginBottom: 4 }}>{c.nom}</h3>
-                    <span className="muted" style={{ fontSize: 14 }}>{c.role || "Non précisé"}</span>
-                  </div>
-                  {isAdmin && <button className="action-btn x" onClick={() => supprimerContact(c.id)}>🗑</button>}
-                </div>
-                <div style={{ marginTop: 16 }}>
-                  <a href={`mailto:${c.email}`} className="btn ghost" style={{ padding: "8px 16px", fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8 }}>✉️ Envoyer un mail</a>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
 /* ---------------- Vue Cours (Dépôt collaboratif et liste) ---------------- */
 function CoursView({ session, prenom, isAdmin }) {
   const [cours, setCours] = useState([]);
@@ -933,7 +847,7 @@ function CoursView({ session, prenom, isAdmin }) {
     matieresExistantes.forEach(mat => { m[mat] = {}; });
     cours.forEach(c => {
       const mat = c.matiere;
-      const chap = c.chapitre || "Général"; // "Général" par défaut si aucun chapitre n'est précisé
+      const chap = c.chapitre || "Général"; 
       if (!m[mat][chap]) m[mat][chap] = [];
       m[mat][chap].push(c);
     });
