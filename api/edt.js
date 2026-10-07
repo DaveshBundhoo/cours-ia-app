@@ -44,7 +44,7 @@ export default async function handler(req, res) {
     }
 
     res.setHeader("Content-Type", "text/calendar; charset=utf-8");
-    res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400");
+    res.setHeader("Cache-Control", "s-maxage=10800, stale-while-revalidate=3600, stale-if-error=86400");
     res.status(200).send(text);
   } catch (e) {
     res.status(502).json({ error: e.name === "AbortError" ? "TimeEdit met trop de temps à répondre" : e.message });
