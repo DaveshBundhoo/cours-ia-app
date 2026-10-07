@@ -621,7 +621,7 @@ function PlanningView({ isAdmin }) {
   const affiches = mobile ? [jours[Math.min(jourMobile, jours.length - 1)]] : jours;
 
   const heures = useMemo(() => {
-    let min = 8, max = 19;
+    let min = 8, max = 20;
     affiches.forEach((j) => j.evts.forEach((e) => {
       min = Math.min(min, e.debut.getHours());
       const f = e.fin || e.debut;
@@ -1023,15 +1023,15 @@ function CoursView({ session, prenom, isAdmin }) {
 const css = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root { --bg-app: #030a1a; --bg-sidebar: #040c1f; --bg-card: #071229; --bg-card-blue: #0d2a6e; --txt-main: #FFFFFF; --txt-muted: #8a97b4; --border: #11244d; --accent: #2f6bff; --accent-hover: #4a80ff; --danger: #EF4444; }
-html { color-scheme: dark; }
-body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: radial-gradient(1200px 600px at 70% -10%, #0a1d46 0%, var(--bg-app) 60%); background-color: var(--bg-app); color: var(--txt-main); line-height: 1.5; overflow: hidden; -webkit-font-smoothing: antialiased; }
+html { color-scheme: dark; height: 100%; }
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: radial-gradient(1200px 600px at 70% -10%, #0a1d46 0%, var(--bg-app) 60%); background-color: var(--bg-app); color: var(--txt-main); line-height: 1.5; overflow: hidden; height: 100%; overscroll-behavior: none; -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; }
 button { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
 .auth-screen h1 { margin: 24px 0; font-size: 28px; }
-.app-layout { display: flex; height: 100vh; width: 100vw; }
+.app-layout { display: flex; height: 100vh; height: 100dvh; width: 100%; overflow: hidden; }
 
 .sidebar { width: 250px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px 14px; }
 .logo-header { display: flex; align-items: center; gap: 12px; margin-bottom: 36px; padding: 0 12px; line-height: 1.25; }
@@ -1043,15 +1043,15 @@ a:hover { text-decoration: underline; }
 .nav-link.active { color: var(--txt-main); background: rgba(47,107,255,.14); border-left-color: var(--accent); }
 .nav-link.active svg { color: var(--accent); }
 
-.main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.topbar { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid var(--border); background: rgba(3,10,26,.6); backdrop-filter: blur(8px); }
+.main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.topbar { flex: none; height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid var(--border); background: rgba(3,10,26,.6); backdrop-filter: blur(8px); }
 .breadcrumb { font-weight: 600; font-size: 15px; }
 .user-menu { display: flex; align-items: center; gap: 14px; }
 .name-btn { background: none; border: none; color: var(--txt-main); font-weight: 600; cursor: pointer; padding: 6px 12px; border-radius: 8px; transition: .2s; }
 .name-btn:hover { background: rgba(255,255,255,.06); }
 .logout-btn { background: transparent; border: 1px solid var(--border); color: var(--txt-muted); width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .logout-btn:hover { color: var(--danger); border-color: var(--danger); }
-.scroll-area { flex: 1; overflow-y: auto; padding: 32px; }
+.scroll-area { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 32px 32px 56px; }
 
 .accueil-view { max-width: 1000px; margin: 0 auto; }
 .greeting { font-size: clamp(26px, 4vw, 36px); margin-bottom: 30px; line-height: 1.15; letter-spacing: -.02em; }
@@ -1192,7 +1192,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
   .bottom-bar.mobile-only { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; }
   .app-layout { flex-direction: column; }
   .topbar { padding: 0 20px; height: 60px; }
-  .scroll-area { padding: 18px 14px; margin-bottom: 68px; }
+  .scroll-area { padding: 18px 14px calc(96px + env(safe-area-inset-bottom)); }
+  input, select { font-size: 16px; }
   .cal-toolbar { grid-template-columns: 1fr 1fr; }
   .cal-title { grid-column: 1 / 2; grid-row: 1; text-align: left; font-size: 20px; }
   .cal-nav { grid-column: 1 / 3; grid-row: 2; }
