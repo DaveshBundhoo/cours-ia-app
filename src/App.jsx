@@ -507,7 +507,6 @@ function useMedia(q) {
   return ok;
 }
 
-// place les cours d'un jour dans des colonnes (gère les cours qui se chevauchent)
 function placerCours(evts, debutH) {
   const liste = [...evts].sort((a, b) => a.debut - b.debut);
   const out = [];
@@ -532,7 +531,6 @@ function placerCours(evts, debutH) {
   return out;
 }
 
-// Formulaire : ajouter / modifier un cours à la main
 const dateLocale = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const heureLocale = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
@@ -599,8 +597,8 @@ function PlanningView({ isAdmin }) {
   const { events, loading, erreur, recharger } = usePlanning();
   const mobile = useMedia("(max-width: 768px)");
   const [debut, setDebut] = useState(lundiDe(new Date()));
-  const [choisi, setChoisi] = useState(null);       // cours ouvert (fenêtre)
-  const [form, setForm] = useState(null);           // formulaire ajout / modification
+  const [choisi, setChoisi] = useState(null);       
+  const [form, setForm] = useState(null);           
   const [jourMobile, setJourMobile] = useState(() => (new Date().getDay() + 6) % 7);
   const [maintenant, setMaintenant] = useState(new Date());
 
@@ -615,13 +613,13 @@ function PlanningView({ isAdmin }) {
       const d = new Date(debut); d.setDate(d.getDate() + i);
       tous.push({ d, evts: events.filter((e) => memeJour(e.debut, d)) });
     }
-    return tous.filter((j, i) => i < 6 || j.evts.length > 0);   // dimanche seulement s'il y a cours
+    return tous.filter((j, i) => i < 6 || j.evts.length > 0);   
   }, [events, debut]);
 
   const affiches = mobile ? [jours[Math.min(jourMobile, jours.length - 1)]] : jours;
 
   const heures = useMemo(() => {
-    let min = 8, max = 19;
+    let min = 8, max = 20;
     affiches.forEach((j) => j.evts.forEach((e) => {
       min = Math.min(min, e.debut.getHours());
       const f = e.fin || e.debut;
@@ -676,7 +674,6 @@ function PlanningView({ isAdmin }) {
       {erreur && <p className="cal-error">{erreur}</p>}
 
       <div className="cal-box">
-        {/* en-tête des jours */}
         <div className="cal-head">
           <div className="cal-gutter" />
           {mobile ? (
@@ -700,7 +697,6 @@ function PlanningView({ isAdmin }) {
           )}
         </div>
 
-        {/* grille horaire */}
         <div className="cal-body" style={{ height: nbH * PX_HEURE }}>
           <div className="cal-gutter">
             {Array.from({ length: nbH }, (_, i) => (
@@ -774,9 +770,8 @@ function PlanningView({ isAdmin }) {
   );
 }
 
-// Fonction utilitaire pour décoder le format ICS (iCalendar)
 function unescapeICS(t = "") {
-  return t.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\").trim();
+  return t.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\;/g, ";").replace(/\\\\/g, "\\").trim();
 }
 
 function parseICS(icsText) {
@@ -807,7 +802,6 @@ function parseICS(icsText) {
   return events.sort((a, b) => a.debut - b.debut);
 }
 
-// Transforme la date ICS (ex: 20241007T083000Z ou 20241007) en objet Date Javascript
 function parseICSDate(str) {
   const m = str.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
   if (!m) return null;
@@ -952,7 +946,7 @@ function CoursView({ session, prenom, isAdmin }) {
         const path = `${session.user.id}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         const up = await supabase.storage.from("cours").upload(path, f);
         if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ matiere: matiereCible, auteur: prenom, fichier: path });
+        const ins = await supabase.from("cours").insert({ matiere: matiereCible, auteur: prenom, fichier: path, fichier_name: f.name });
         if (ins.error) throw ins.error;
       }
       setFichiers([]); 
@@ -994,6 +988,17 @@ function CoursView({ session, prenom, isAdmin }) {
     } catch (err) {
       setIaModal({ matiere, texte: "Erreur lors de la génération : " + err.message, loading: false });
     }
+  }
+
+  // --- NOUVELLE FONCTION POUR TELECHARGER LE FICHIER ---
+  async function telechargerFichier(cheminFichier) {
+      const { data, error } = await supabase.storage.from('cours').createSignedUrl(cheminFichier, 60); // URL valide 60 secondes
+      if (error) {
+          alert("Erreur lors de la récupération du fichier : " + error.message);
+          return;
+      }
+      // Ouvre l'URL signée dans un nouvel onglet, ce qui déclenche le téléchargement ou l'affichage du PDF
+      window.open(data.signedUrl, '_blank');
   }
 
   return (
@@ -1060,10 +1065,26 @@ function CoursView({ session, prenom, isAdmin }) {
                 <ul className="list" style={{ flex: 1, maxHeight: '200px', overflowY: 'auto' }}>
                   {parMatiere[m].map((c) => (
                     <li key={c.id}>
-                      <div><b>{c.auteur}</b><small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small></div>
+                      <div>
+                        <b>{c.auteur}</b>
+                        <small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
+                      </div>
                       <div className="right">
-                        {isAdmin && (<><button className="action-btn" onClick={() => editerNomMatiere(c)} title="Modifier la matière">✏️</button><button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button></>)}
-                        <em className="ok" style={{ background: "transparent", padding: 0 }}>📄</em>
+                        {isAdmin && (
+                            <>
+                                <button className="action-btn" onClick={() => editerNomMatiere(c)} title="Modifier la matière">✏️</button>
+                                <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
+                            </>
+                        )}
+                        {/* --- L'ICONE EST MAINTENANT UN BOUTON CLIQUABLE --- */}
+                        <button 
+                            className="action-btn ok" 
+                            style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
+                            onClick={() => telechargerFichier(c.fichier)}
+                            title="Ouvrir / Télécharger le document"
+                        >
+                            📄
+                        </button>
                       </div>
                     </li>
                   ))}
