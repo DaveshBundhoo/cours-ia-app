@@ -904,6 +904,7 @@ function CoursView({ session, prenom, isAdmin }) {
   const [busy, setBusy] = useState(false);
   
   const [iaModal, setIaModal] = useState(null); 
+  const [editModal, setEditModal] = useState(null); // Gère la modification d'un document (nom + matière)
   
   const inputRef = useRef(null);
 
@@ -957,17 +958,28 @@ function CoursView({ session, prenom, isAdmin }) {
   }
 
   async function supprimer(c) {
-    if (!confirm("Admin: Supprimer ce fichier ?")) return;
+    if (!confirm("Admin: Supprimer ce fichier définitivement ?")) return;
     await supabase.storage.from("cours").remove([c.fichier]);
     await supabase.from("cours").delete().eq("id", c.id);
     charger();
   }
 
-  async function editerNomMatiere(c) {
-    const nvNom = prompt("Admin: Entrez le nouveau nom", c.matiere);
-    if (nvNom && nvNom.trim() !== "" && nvNom !== c.matiere) {
-      await supabase.from("cours").update({ matiere: nvNom.trim() }).eq("id", c.id);
+  // --- NOUVELLE FONCTION D'EDITION (Renommer + Déplacer) ---
+  async function sauvegarderEdition() {
+    if (!editModal.fichier_name.trim() || !editModal.matiere.trim()) return;
+    
+    setBusy(true);
+    const { error } = await supabase.from("cours").update({ 
+      fichier_name: editModal.fichier_name.trim(), 
+      matiere: editModal.matiere.trim() 
+    }).eq("id", editModal.id);
+    
+    setBusy(false);
+    if (!error) {
+      setEditModal(null);
       charger();
+    } else {
+      alert("Erreur lors de la modification : " + error.message);
     }
   }
 
@@ -990,14 +1002,12 @@ function CoursView({ session, prenom, isAdmin }) {
     }
   }
 
-  // --- NOUVELLE FONCTION POUR TELECHARGER LE FICHIER ---
   async function telechargerFichier(cheminFichier) {
-      const { data, error } = await supabase.storage.from('cours').createSignedUrl(cheminFichier, 60); // URL valide 60 secondes
+      const { data, error } = await supabase.storage.from('cours').createSignedUrl(cheminFichier, 60);
       if (error) {
           alert("Erreur lors de la récupération du fichier : " + error.message);
           return;
       }
-      // Ouvre l'URL signée dans un nouvel onglet, ce qui déclenche le téléchargement ou l'affichage du PDF
       window.open(data.signedUrl, '_blank');
   }
 
@@ -1062,32 +1072,45 @@ function CoursView({ session, prenom, isAdmin }) {
                 <div className="head">
                   <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{parMatiere[m].length} fichiers</span>
                 </div>
-                <ul className="list" style={{ flex: 1, maxHeight: '200px', overflowY: 'auto' }}>
-                  {parMatiere[m].map((c) => (
-                    <li key={c.id}>
-                      <div>
-                        <b>{c.auteur}</b>
-                        <small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
-                      </div>
-                      <div className="right">
-                        {isAdmin && (
-                            <>
-                                <button className="action-btn" onClick={() => editerNomMatiere(c)} title="Modifier la matière">✏️</button>
-                                <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
-                            </>
-                        )}
-                        {/* --- L'ICONE EST MAINTENANT UN BOUTON CLIQUABLE --- */}
-                        <button 
-                            className="action-btn ok" 
-                            style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
-                            onClick={() => telechargerFichier(c.fichier)}
-                            title="Ouvrir / Télécharger le document"
-                        >
-                            📄
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                <ul className="list" style={{ flex: 1, maxHeight: '250px', overflowY: 'auto' }}>
+                  {parMatiere[m].map((c) => {
+                    // Fallback si fichier_name est vide (pour les vieux fichiers)
+                    const nomAffichage = c.fichier_name || c.fichier.split('-').slice(1).join('-') || "Document sans nom";
+                    
+                    return (
+                      <li key={c.id}>
+                        <div style={{ paddingRight: "10px", minWidth: 0 }}>
+                          {/* L'AUTEUR EST CACHÉ, LE NOM DU FICHIER EST AFFICHÉ À LA PLACE */}
+                          <b style={{ display: "block", wordBreak: "break-word", fontSize: "14px", lineHeight: "1.3", marginBottom: "4px" }}>
+                            {nomAffichage}
+                          </b>
+                          <small>Ajouté le {new Date(c.created_at).toLocaleDateString("fr-FR")}</small>
+                        </div>
+                        <div className="right" style={{ flexShrink: 0 }}>
+                          {isAdmin && (
+                              <>
+                                  <button 
+                                    className="action-btn" 
+                                    onClick={() => setEditModal({ id: c.id, fichier_name: nomAffichage, matiere: c.matiere })} 
+                                    title="Renommer ou déplacer"
+                                  >
+                                    ✏️
+                                  </button>
+                                  <button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button>
+                              </>
+                          )}
+                          <button 
+                              className="action-btn ok" 
+                              style={{ background: "transparent", padding: "4px", fontSize: "16px", cursor: "pointer" }} 
+                              onClick={() => telechargerFichier(c.fichier)}
+                              title="Ouvrir / Télécharger le document"
+                          >
+                              📄
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
                 
                 {isAdmin ? (
@@ -1112,6 +1135,44 @@ function CoursView({ session, prenom, isAdmin }) {
           </div>
         )}
       </section>
+
+      {/* MODALE POUR MODIFIER UN DOCUMENT (RENOMMER / DEPLACER) */}
+      {editModal && (
+        <div className="modal" onClick={() => setEditModal(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-bar" style={{ background: "var(--accent)" }} />
+            <h3>✏️ Modifier le document</h3>
+            
+            <label style={{ marginTop: 16 }}>Nom du fichier
+              <input 
+                value={editModal.fichier_name} 
+                onChange={(e) => setEditModal({...editModal, fichier_name: e.target.value})} 
+                placeholder="Ex: Chapitre 1 - Introduction"
+              />
+            </label>
+            
+            <label style={{ marginTop: 16 }}>Déplacer dans un autre cours (optionnel)
+              <input 
+                value={editModal.matiere} 
+                onChange={(e) => setEditModal({...editModal, matiere: e.target.value})} 
+                list="matieres-list"
+              />
+              <datalist id="matieres-list">
+                {matieresExistantes.map(m => <option key={m} value={m} />)}
+              </datalist>
+            </label>
+
+            <div className="form-2" style={{ marginTop: 24 }}>
+              <button className="btn full" disabled={busy} onClick={sauvegarderEdition}>
+                {busy ? "..." : "Enregistrer"}
+              </button>
+              <button className="btn ghost full" style={{ marginTop: 0 }} onClick={() => setEditModal(null)}>
+                Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODALE POUR AFFICHER LE RESULTAT IA */}
       {iaModal && (
