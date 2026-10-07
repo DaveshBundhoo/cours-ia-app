@@ -621,7 +621,7 @@ function PlanningView({ isAdmin }) {
   const affiches = mobile ? [jours[Math.min(jourMobile, jours.length - 1)]] : jours;
 
   const heures = useMemo(() => {
-    let min = 8, max = 20;
+    let min = 8, max = 19;
     affiches.forEach((j) => j.evts.forEach((e) => {
       min = Math.min(min, e.debut.getHours());
       const f = e.fin || e.debut;
@@ -776,7 +776,7 @@ function PlanningView({ isAdmin }) {
 
 // Fonction utilitaire pour décoder le format ICS (iCalendar)
 function unescapeICS(t = "") {
-  return t.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\;/g, ";").replace(/\\\\/g, "\\").trim();
+  return t.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\").trim();
 }
 
 function parseICS(icsText) {
@@ -899,14 +899,18 @@ function AnnuaireView({ isAdmin }) {
   );
 }
 
-/* ---------------- Vue Cours (Dépôt et liste) ---------------- */
+/* ---------------- Vue Cours (Dépôt collaboratif et liste) ---------------- */
 function CoursView({ session, prenom, isAdmin }) {
   const [cours, setCours] = useState([]);
-  const [nomCours, setNomCours] = useState("");
+  const [nomCoursAdmin, setNomCoursAdmin] = useState(""); 
+  const [matiereChoisie, setMatiereChoisie] = useState(""); 
   const [fichiers, setFichiers] = useState([]);
   const [drag, setDrag] = useState(false);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  
+  const [iaModal, setIaModal] = useState(null); 
+  
   const inputRef = useRef(null);
 
   async function charger() {
@@ -924,6 +928,12 @@ function CoursView({ session, prenom, isAdmin }) {
     return m;
   }, [cours, matieresExistantes]);
 
+  useEffect(() => {
+    if (!isAdmin && !matiereChoisie && matieresExistantes.length > 0) {
+      setMatiereChoisie(matieresExistantes[0]);
+    }
+  }, [matieresExistantes, isAdmin, matiereChoisie]);
+
   const ajouterFichiers = (list) => {
     const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
     setFichiers((prev) => [...prev, ...ok]);
@@ -931,17 +941,24 @@ function CoursView({ session, prenom, isAdmin }) {
 
   async function deposer(e) {
     e.preventDefault();
-    if (!nomCours.trim() || !fichiers.length) return setMsg("Ajoute un nom de cours et un fichier.");
+    
+    const matiereCible = isAdmin ? nomCoursAdmin.trim() : matiereChoisie;
+
+    if (!matiereCible || !fichiers.length) return setMsg("Sélectionne une matière et ajoute au moins un fichier.");
+    
     setBusy(true); setMsg("");
     try {
       for (const f of fichiers) {
         const path = `${session.user.id}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         const up = await supabase.storage.from("cours").upload(path, f);
         if (up.error) throw up.error;
-        const ins = await supabase.from("cours").insert({ matiere: nomCours.trim(), auteur: prenom, fichier: path });
+        const ins = await supabase.from("cours").insert({ matiere: matiereCible, auteur: prenom, fichier: path });
         if (ins.error) throw ins.error;
       }
-      setFichiers([]); setNomCours(""); setMsg("Cours déposé ✨"); charger();
+      setFichiers([]); 
+      if (isAdmin) setNomCoursAdmin(""); 
+      setMsg("Fichiers déposés avec succès ✨"); 
+      charger();
     } catch (err) { setMsg("Erreur : " + err.message); } finally { setBusy(false); }
   }
 
@@ -960,18 +977,60 @@ function CoursView({ session, prenom, isAdmin }) {
     }
   }
 
+  async function genererCoursIA(matiere) {
+    setIaModal({ matiere, texte: "", loading: true }); 
+    
+    try {
+      const res = await fetch("/api/generer-cours", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matiere })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erreur serveur inconnu");
+      
+      setIaModal({ matiere, texte: data.cours_markdown, loading: false });
+    } catch (err) {
+      setIaModal({ matiere, texte: "Erreur lors de la génération : " + err.message, loading: false });
+    }
+  }
+
   return (
     <div className="cours-view" style={{ maxWidth: 1000, margin: "0 auto" }}>
-      {isAdmin && (
-        <section id="depot" className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
-          <h2>👑 Ajouter un cours</h2>
+      
+      <section id="depot" className={`card ${isAdmin ? "admin-panel-highlight" : ""}`} style={{ marginBottom: 32 }}>
+        <h2>{isAdmin ? "👑 Ajouter un cours (Admin)" : "Partager un cours"}</h2>
+        
+        {!isAdmin && matieresExistantes.length === 0 ? (
+          <p className="muted" style={{ marginTop: 16 }}>
+            Aucune matière n'a encore été créée. Demandez à l'administrateur d'ajouter une matière avant de pouvoir partager vos fichiers.
+          </p>
+        ) : (
           <form onSubmit={deposer}>
             <div className="row" style={{ marginTop: 16 }}>
-              <label>Matière <input value={nomCours} onChange={(e) => setNomCours(e.target.value)} /></label>
+              <label>Matière
+                {isAdmin ? (
+                  <input 
+                    value={nomCoursAdmin} 
+                    onChange={(e) => setNomCoursAdmin(e.target.value)} 
+                    placeholder="Créer une nouvelle matière (ex: Base de données)" 
+                  />
+                ) : (
+                  <select 
+                    value={matiereChoisie} 
+                    onChange={(e) => setMatiereChoisie(e.target.value)}
+                  >
+                    {matieresExistantes.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                )}
+              </label>
             </div>
             <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
               <div style={{ fontSize: 32 }}>⬆️</div>
-              <strong>Glisse tes fichiers ici</strong><span>ou touche pour choisir</span>
+              <strong>Glisse tes photos ou PDF ici</strong><span>ou touche pour choisir</span>
               <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => ajouterFichiers(e.target.files)} />
             </div>
             {fichiers.length > 0 && (
@@ -981,40 +1040,101 @@ function CoursView({ session, prenom, isAdmin }) {
                 ))}
               </ul>
             )}
-            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi…" : "Créer le cours"}</button>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Envoi en cours…" : "Partager les fichiers"}</button>
             {msg && <p className="msg">{msg}</p>}
           </form>
-        </section>
-      )}
+        )}
+      </section>
 
       <section>
-        <h2 style={{ marginBottom: 24 }}>Cours disponibles</h2>
+        <h2 style={{ marginBottom: 24 }}>Cours de la classe</h2>
         {matieresExistantes.length === 0 ? (
-          <div className="card empty-state"><p className="muted">Aucun cours n'a été publié.</p></div>
+          <div className="card empty-state"><p className="muted">Aucun fichier n'a été publié pour le moment.</p></div>
         ) : (
           <div className="grid">
             {matieresExistantes.map((m) => (
-              <div className="card" key={m}>
+              <div className="card" key={m} style={{ display: 'flex', flexDirection: 'column' }}>
                 <div className="head">
-                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{parMatiere[m].length}</span>
+                  <h3 style={{ wordBreak: 'break-word' }}>{m}</h3><span className="count">{parMatiere[m].length} fichiers</span>
                 </div>
-                <ul className="list">
+                <ul className="list" style={{ flex: 1, maxHeight: '200px', overflowY: 'auto' }}>
                   {parMatiere[m].map((c) => (
                     <li key={c.id}>
                       <div><b>{c.auteur}</b><small>{new Date(c.created_at).toLocaleDateString("fr-FR")}</small></div>
                       <div className="right">
-                        {isAdmin && (<><button className="action-btn" onClick={() => editerNomMatiere(c)}>✏️</button><button className="action-btn x" onClick={() => supprimer(c)}>🗑</button></>)}
-                        <em className={c.statut === "transcrit" ? "ok" : "wait"}>{c.statut || 'En ligne'}</em>
+                        {isAdmin && (<><button className="action-btn" onClick={() => editerNomMatiere(c)} title="Modifier la matière">✏️</button><button className="action-btn x" onClick={() => supprimer(c)} title="Supprimer">🗑</button></>)}
+                        <em className="ok" style={{ background: "transparent", padding: 0 }}>📄</em>
                       </div>
                     </li>
                   ))}
                 </ul>
-                <button className="btn ghost full" onClick={() => alert(`Téléchargement ou génération de : ${m}`)}>📄 Télécharger</button>
+                
+                {isAdmin ? (
+                  <button 
+                    className="btn full" 
+                    style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }} 
+                    onClick={() => genererCoursIA(m)}
+                  >
+                    ✨ Générer le cours avec l'IA
+                  </button>
+                ) : (
+                  <button 
+                    className="btn ghost full" 
+                    style={{ marginTop: 16 }} 
+                    onClick={() => alert("Seul l'administrateur peut générer la synthèse finale du cours.")}
+                  >
+                    ⏳ Synthèse IA en attente
+                  </button>
+                )}
               </div>
             ))}
           </div>
         )}
       </section>
+
+      {/* MODALE POUR AFFICHER LE RESULTAT IA */}
+      {iaModal && (
+        <div className="modal" onClick={() => setIaModal(null)}>
+          <div className="modal-card" style={{ maxWidth: 800, width: "90%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-bar" style={{ background: "linear-gradient(135deg, #8b5cf6, #3b82f6)" }} />
+            
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h3 style={{ margin: 0 }}>✨ Synthèse IA : {iaModal.matiere}</h3>
+              <button className="action-btn x" onClick={() => setIaModal(null)} style={{ fontSize: 20 }}>✕</button>
+            </div>
+
+            {iaModal.loading ? (
+              <div style={{ padding: "40px 0", textAlign: "center" }}>
+                <div style={{ fontSize: 40, marginBottom: 16 }} className="spin-emoji">🤖</div>
+                <h4 style={{ margin: 0 }}>Gemini lit les notes de la classe...</h4>
+                <p className="muted">Cela peut prendre entre 10 et 30 secondes selon le nombre d'images.</p>
+              </div>
+            ) : (
+              <div style={{ 
+                background: "rgba(0,0,0,0.2)", 
+                padding: "20px", 
+                borderRadius: "12px", 
+                border: "1px solid var(--border)",
+                maxHeight: "60vh",
+                overflowY: "auto",
+                whiteSpace: "pre-wrap",
+                lineHeight: "1.6",
+                fontSize: "15px"
+              }}>
+                {iaModal.texte}
+              </div>
+            )}
+            
+            {!iaModal.loading && (
+              <button className="btn full" style={{ marginTop: 20 }} onClick={() => {
+                alert("La fonction d'export PDF arrivera bientôt ! Tu peux déjà copier/coller le texte.");
+              }}>
+                📄 Exporter en PDF (Bientôt)
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1186,6 +1306,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
 .bottom-link.active { color: var(--accent); }
 .bottom-link .nav-label { font-size: 10.5px; font-weight: 500; }
+
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.spin-emoji { display: inline-block; animation: spin 2s linear infinite; }
 
 @media (max-width: 768px) {
   .desktop-only { display: none !important; }
