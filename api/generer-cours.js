@@ -1,59 +1,81 @@
-import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+// api/generer-cours.js
 
-export const maxDuration = 60; 
+// C'EST LA LIGNE MAGIQUE : Elle indique à Vercel d'utiliser un serveur "Edge" 
+// pour ne pas subir la coupure des 10 secondes.
+export const config = {
+  runtime: 'edge', 
+};
 
-export default async function handler(req, res) {
+export default async function handler(req) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Méthode non autorisée' });
+    return new Response(JSON.stringify({ error: 'Méthode non autorisée' }), { status: 405 });
   }
-
-  const { matiere, chapitre, fichiers } = req.body;
-  if (!matiere || !fichiers || fichiers.length === 0) {
-    return res.status(400).json({ error: 'Matière ou fichiers manquants' });
-  }
-
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Non autorisé. Token manquant.' });
-  }
-  const token = authHeader.split(' ')[1];
 
   try {
-    if (!process.env.VITE_SUPABASE_URL || !process.env.VITE_SUPABASE_ANON_KEY) {
-      throw new Error("Clés Supabase manquantes côté serveur.");
-    }
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("Clé GEMINI_API_KEY manquante dans Vercel.");
+    const authHeader = req.headers.get('authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'Non autorisé. Connectez-vous.' }), { status: 401 });
     }
 
-    const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY);
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    // Récupération des données envoyées par ton App React
+    const body = await req.json();
+    const { matiere, chapitre, fichiers } = body;
 
-    // Vérifier que l'utilisateur est bien connecté à l'application
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) throw new Error("Session invalide ou expirée.");
+    if (!matiere || !fichiers || fichiers.length === 0) {
+      return new Response(JSON.stringify({ error: 'Matière ou fichiers manquants' }), { status: 400 });
+    }
 
-    // Transformer les fichiers Base64 du front en format lisible par Gemini
-    const imageParts = fichiers.map(f => ({
-      inlineData: { data: f.data, mimeType: f.mimeType }
-    }));
+    const GKEY = process.env.GEMINI_API_KEY;
+    const SB_URL = process.env.VITE_SUPABASE_URL;
+    const SB_KEY = process.env.VITE_SUPABASE_ANON_KEY;
 
-    // Demande à l'IA
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `Voici le support (PDF ou photos) du cours de "${matiere}" (Chapitre : ${chapitre}).
-    Ton objectif est de synthétiser parfaitement ce document pour créer une fiche de révision complète et facile à lire.
-    - Sois précis et garde toutes les définitions, schémas logiques et formules importantes. Ne perds aucune information cruciale du cours.
-    - Mets le texte en forme de manière claire en Markdown (titres avec ##, listes à puces, mets les concepts clés en **gras**).`;
+    if (!GKEY || !SB_URL || !SB_KEY) {
+        throw new Error("Clés API manquantes dans les paramètres Vercel.");
+    }
 
-    const result = await model.generateContent([prompt, ...imageParts]);
-    const response = await result.response;
-    const text = response.text();
+    // 1. Vérifier que l'étudiant est bien connecté (sécurité Supabase)
+    const sbRes = await fetch(`${SB_URL}/auth/v1/user`, {
+        headers: { 'apikey': SB_KEY, 'Authorization': authHeader }
+    });
+    if (!sbRes.ok) throw new Error("Session expirée. Veuillez recharger la page.");
 
-    return res.status(200).json({ cours_markdown: text });
+    // 2. Préparer les instructions et intégrer le PDF pour Gemini
+    const parts = [
+        { text: `Voici le support (PDF ou photos) du cours de "${matiere}" (Chapitre : ${chapitre}). Ton objectif est de synthétiser ce document pour créer une fiche de révision complète et facile à lire en Markdown (avec des titres ## et des listes). Ne perds aucune définition importante.` }
+    ];
+
+    for (const f of fichiers) {
+        parts.push({
+            inlineData: { mimeType: f.mimeType, data: f.data }
+        });
+    }
+
+    // 3. Demander à Gemini de travailler (l'attente peut durer 20s, Edge l'autorise)
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GKEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            contents: [{ role: "user", parts }],
+            generationConfig: { temperature: 0.2 }
+        })
+    });
+
+    const geminiData = await geminiRes.json();
+
+    if (!geminiRes.ok) {
+        throw new Error((geminiData.error && geminiData.error.message) || "Gemini a refusé la requête.");
+    }
+
+    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "Erreur : L'IA n'a rien renvoyé.";
+
+    // 4. Renvoyer la synthèse à ton application React
+    return new Response(JSON.stringify({ cours_markdown: text }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+    });
 
   } catch (error) {
-    console.error("Erreur Backend IA:", error);
-    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la génération." });
+    console.error("Erreur Backend Edge:", error.message);
+    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
