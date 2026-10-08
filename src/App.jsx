@@ -154,6 +154,7 @@ const ICON_PATHS = {
   book: "M4 4.5A1.5 1.5 0 0 1 5.5 3H20v15H5.5A1.5 1.5 0 0 0 4 19.5zM4 19.5A1.5 1.5 0 0 0 5.5 21H20",
   star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z",
   power: "M12 3v9M6.3 6.8a8 8 0 1 0 11.4 0",
+  link: "M10 14a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5M14 10a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5",
 };
 function Icon({ n, size = 20 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={ICON_PATHS[n]} /></svg>;
@@ -168,6 +169,7 @@ function Layout({ session }) {
 
   const NAV_ITEMS = [
     { id: "Accueil", icon: "home" },
+    { id: "Liens de cours", icon: "link" },
     { id: "Planning", icon: "cal" },
     { id: "Fiches IA", icon: "book" }, 
     { id: "Date importante", icon: "star" },
@@ -203,6 +205,7 @@ function Layout({ session }) {
           {activeTab === "Accueil" && <AccueilView prenom={prenom} isAdmin={isAdmin} setActiveTab={setActiveTab} />}
           {activeTab === "Profil" && <ProfilView prenomActuel={prenom} />}
           {activeTab === "Fiches IA" && <FichesView session={session} prenom={prenom} isAdmin={isAdmin} />}
+          {activeTab === "Liens de cours" && <LiensView isAdmin={isAdmin} />}
           {activeTab === "Planning" && <PlanningView isAdmin={isAdmin} />}
           {activeTab === "Date importante" && <DatesView isAdmin={isAdmin} />}
         </div>
@@ -215,6 +218,108 @@ function Layout({ session }) {
           </button>
         ))}
       </nav>
+    </div>
+  );
+}
+
+/* ---------------- Vue Liens de cours (liens vers les supports des profs) ---------------- */
+const lienSur = (u) => (/^https?:\/\//i.test(u) ? u : "");
+const domaine = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+
+function LiensView({ isAdmin }) {
+  const [liens, setLiens] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [recherche, setRecherche] = useState("");
+  const [matiere, setMatiere] = useState("");
+  const [titre, setTitre] = useState("");
+  const [url, setUrl] = useState("");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function charger() {
+    const { data } = await supabase.from("liens_cours").select("*").order("created_at", { ascending: true });
+    if (data) setLiens(data);
+    setLoading(false);
+  }
+  useEffect(() => { charger(); }, []);
+
+  async function ajouter(e) {
+    e.preventDefault();
+    let u = url.trim();
+    if (u && !/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u;      // "drive.google.com/..." -> https://...
+    if (!matiere.trim() || !titre.trim() || !u) return setMsg("Remplis la matière, le titre et le lien.");
+    if (!lienSur(u)) return setMsg("Le lien doit commencer par http:// ou https://");
+    setBusy(true); setMsg("");
+    const { error } = await supabase.from("liens_cours").insert({ matiere: matiere.trim(), titre: titre.trim(), url: u, description: description.trim() });
+    setBusy(false);
+    if (error) return setMsg("Erreur : " + error.message);
+    setTitre(""); setUrl(""); setDescription(""); setMsg("Lien ajouté ✨");
+    charger();
+  }
+  async function supprimer(id) {
+    if (!confirm("Supprimer ce lien ?")) return;
+    const { error } = await supabase.from("liens_cours").delete().eq("id", id);
+    if (error) return alert("Erreur : " + error.message);
+    charger();
+  }
+
+  const matieres = useMemo(() => [...new Set(liens.map((l) => l.matiere))].sort((a, b) => a.localeCompare(b, "fr")), [liens]);
+  const filtres = liens.filter((l) => {
+    const q = recherche.trim().toLowerCase();
+    return !q || [l.matiere, l.titre, l.description].some((x) => (x || "").toLowerCase().includes(q));
+  });
+  const groupes = matieres.map((m) => ({ m, items: filtres.filter((l) => l.matiere === m) })).filter((g) => g.items.length);
+
+  return (
+    <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+      {isAdmin && (
+        <section className="card admin-panel-highlight" style={{ marginBottom: 32 }}>
+          <h2 style={{ marginBottom: 16 }}>👑 Ajouter un lien</h2>
+          <form onSubmit={ajouter}>
+            <div className="row">
+              <label>Matière
+                <input list="liens-matieres" value={matiere} onChange={(e) => setMatiere(e.target.value)} placeholder="Ex : Management & Leadership" />
+                <datalist id="liens-matieres">{matieres.map((m) => <option key={m} value={m} />)}</datalist>
+              </label>
+              <label>Titre <input value={titre} onChange={(e) => setTitre(e.target.value)} placeholder="Ex : Séance 7 - Cas Renault" /></label>
+            </div>
+            <label style={{ marginTop: 16 }}>Lien <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" inputMode="url" /></label>
+            <label style={{ marginTop: 16 }}>Description (facultatif) <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Ex : Support du prof, PDF" /></label>
+            <button className="btn full" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Ajout…" : "Ajouter le lien"}</button>
+            {msg && <p className="msg">{msg}</p>}
+          </form>
+        </section>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
+        <h2 style={{ margin: 0 }}>Liens de cours</h2>
+        <input type="text" placeholder="🔍 Rechercher…" value={recherche} onChange={(e) => setRecherche(e.target.value)} style={{ maxWidth: 300, margin: 0 }} />
+      </div>
+
+      {loading ? <p className="muted">Chargement…</p> : groupes.length === 0 ? (
+        <div className="card empty-state"><p className="muted">{liens.length === 0 ? "Aucun lien pour le moment." : "Aucun résultat."}</p></div>
+      ) : (
+        <div className="grid">
+          {groupes.map((g) => (
+            <div className="card" key={g.m}>
+              <div className="head"><h3 style={{ wordBreak: "break-word" }}>{g.m}</h3><span className="count">{g.items.length}</span></div>
+              <div className="lien-list">
+                {g.items.map((l) => (
+                  <div className="lien-row" key={l.id}>
+                    <a href={lienSur(l.url) || undefined} target="_blank" rel="noopener noreferrer" className="lien-main">
+                      <b>{l.titre}</b>
+                      {l.description && <span>{l.description}</span>}
+                      <small>{domaine(l.url)} ↗</small>
+                    </a>
+                    {isAdmin && <button className="action-btn x" onClick={() => supprimer(l.id)} title="Supprimer">🗑</button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1381,6 +1486,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .quota-bar i { display: block; height: 100%; border-radius: 99px; transition: width .4s; }
 .quota-foot { margin-top: 10px; font-size: 12.5px; color: var(--txt-muted); }
 @media (max-width: 520px) { .quota-grid { grid-template-columns: 1fr; } }
+
+
+/* ====== Liens de cours ====== */
+.lien-list { display: grid; gap: 10px; }
+.lien-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.03); border: 1px solid transparent; border-radius: 10px; transition: .15s; }
+.lien-row:hover { border-color: var(--accent); background: rgba(47,107,255,.08); }
+.lien-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; color: var(--txt-main); text-decoration: none !important; }
+.lien-main b { font-size: 14.5px; overflow-wrap: anywhere; }
+.lien-main span { font-size: 13px; color: var(--txt-muted); overflow-wrap: anywhere; }
+.lien-main small { font-size: 12px; color: var(--accent); }
+.lien-row .action-btn { margin-right: 12px; }
 
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .spin-emoji { display: inline-block; animation: spin 2s linear infinite; }
