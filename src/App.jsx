@@ -462,6 +462,98 @@ async function preparerFichier(file) {
 const LIMITE_ENVOI = 4 * 1024 * 1024; // Vercel refuse les envois > 4,5 Mo
 const taille = (o) => (o / 1024 / 1024).toFixed(1).replace(".", ",") + " Mo";
 
+/* ---------------- Compteur de générations IA (offre gratuite de Gemini) ---------------- */
+// À recopier depuis aistudio.google.com/rate-limit si les limites changent (même valeurs que dans api/generer-cours.js)
+const LIMITES_IA = {
+  "gemini-3.8-flash": { rpm: 5, rpd: 20 },
+  "gemini-3.5-flash": { rpm: 5, rpd: 20 },
+};
+function debutJourPacifique(now) {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(now);
+  const g = (t) => Number(parts.find((p) => p.type === t).value);
+  return new Date(now.getTime() - (g("hour") * 3600 + g("minute") * 60 + g("second")) * 1000 - now.getMilliseconds());
+}
+const dureeTxt = (ms) => {
+  const s = Math.max(1, Math.ceil(ms / 1000));
+  return s >= 3600 ? Math.floor(s / 3600) + " h " + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + " min"
+    : s >= 60 ? Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s" : s + " s";
+};
+
+function useQuotaIA(cle) {
+  const [rows, setRows] = useState(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let vivant = true;
+    const charger = async () => {
+      const depuis = debutJourPacifique(new Date()).toISOString();
+      const { data, error } = await supabase.from("ia_usage").select("modele,created_at").gte("created_at", depuis).order("created_at", { ascending: true }).limit(1000);
+      if (vivant) setRows(error ? "erreur" : data);
+    };
+    charger();
+    const t = setInterval(charger, 30000); // pour voir aussi les générations des autres élèves
+    return () => { vivant = false; clearInterval(t); };
+  }, [cle]);
+
+  const q = useMemo(() => {
+    if (!Array.isArray(rows)) return null;
+    const debut = debutJourPacifique(new Date(now)).getTime();
+    const reset = debut + 86400000;
+    const ts = rows.map((r) => ({ m: r.modele, t: new Date(r.created_at).getTime() }));
+    let restJour = 0, totalJour = 0, dispoMin = 0, totalMin = 0, plusAncien = null;
+    for (const [m, l] of Object.entries(LIMITES_IA)) {
+      const duJour = ts.filter((x) => x.m === m && x.t >= debut);
+      const derniereMin = duJour.filter((x) => x.t > now - 60000);
+      const roomJour = Math.max(0, l.rpd - duJour.length);
+      const roomMin = Math.max(0, l.rpm - derniereMin.length);
+      restJour += roomJour; totalJour += l.rpd; totalMin += l.rpm;
+      dispoMin += Math.min(roomJour, roomMin);
+      if (roomJour > 0 && derniereMin.length) {
+        const t0 = Math.min(...derniereMin.map((x) => x.t));
+        plusAncien = plusAncien === null ? t0 : Math.min(plusAncien, t0);
+      }
+    }
+    return {
+      restJour, totalJour, dispoMin, totalMin, reset,
+      attenteMin: plusAncien === null ? 0 : Math.max(0, plusAncien + 60000 - now),
+    };
+  }, [rows, now]);
+
+  return { q, now };
+}
+
+function QuotaIA({ q, now }) {
+  if (!q) return null;
+  const barre = (reste, total) => (
+    <div className="quota-bar"><i style={{ width: (total ? (reste / total) * 100 : 0) + "%", background: reste === 0 ? "var(--danger)" : reste / total < 0.25 ? "#f59e0b" : "#22c55e" }} /></div>
+  );
+  let pied;
+  if (q.restJour === 0) pied = "Quota du jour épuisé pour toute la classe. Retour dans " + dureeTxt(q.reset - now) + " (vers " + new Date(q.reset).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + ").";
+  else if (q.dispoMin === 0) pied = "Limite par minute atteinte. Prochaine génération possible dans " + dureeTxt(q.attenteMin) + ".";
+  else pied = "Le compteur du jour revient à zéro dans " + dureeTxt(q.reset - now) + " (vers " + new Date(q.reset).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + ").";
+  return (
+    <div className="quota">
+      <div className="quota-title">⚡ Générations IA restantes <span>· partagées par toute la classe</span></div>
+      <div className="quota-grid">
+        <div>
+          <div className="quota-line"><span>Cette minute</span><b>{q.dispoMin} / {q.totalMin}</b></div>
+          {barre(q.dispoMin, q.totalMin)}
+        </div>
+        <div>
+          <div className="quota-line"><span>Aujourd'hui</span><b>{q.restJour} / {q.totalJour}</b></div>
+          {barre(q.restJour, q.totalJour)}
+        </div>
+      </div>
+      <p className="quota-foot">{pied}</p>
+    </div>
+  );
+}
+
 function FichesView({ session, prenom, isAdmin }) {
   const [fiches, setFiches] = useState([]);
   
@@ -469,6 +561,8 @@ function FichesView({ session, prenom, isAdmin }) {
   const [matiere, setMatiere] = useState(""); 
   const [chapitre, setChapitre] = useState(""); 
   const [fichiers, setFichiers] = useState([]);
+  const [quotaKey, setQuotaKey] = useState(0);
+  const { q: quota, now: maintenant } = useQuotaIA(quotaKey);
   
   const [drag, setDrag] = useState(false);
   const [msg, setMsg] = useState("");
@@ -521,6 +615,7 @@ function FichesView({ session, prenom, isAdmin }) {
   async function genererSynthese(e) {
     e.preventDefault();
     if (!matiere.trim() || !fichiers.length) return setMsg("Remplis la matière et ajoute au moins un fichier.");
+    if (quota && quota.dispoMin === 0) return setMsg(quota.restJour === 0 ? "Le quota du jour est épuisé pour la classe." : "Limite par minute atteinte, patiente " + dureeTxt(quota.attenteMin) + ".");
     
     setBusy(true); 
     setMsg("L'IA lit tes fichiers, ça peut prendre 30 secondes...");
@@ -573,6 +668,7 @@ function FichesView({ session, prenom, isAdmin }) {
       setMsg("Erreur de l'IA : " + err.message); 
     } finally { 
       setBusy(false); 
+      setQuotaKey((k) => k + 1);
     }
   }
 
@@ -649,7 +745,8 @@ function FichesView({ session, prenom, isAdmin }) {
             </ul>
           )}
           
-          <button className="btn full" disabled={busy || !matiere || fichiers.length === 0} style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }}>
+          <QuotaIA q={quota} now={maintenant} />
+          <button className="btn full" disabled={busy || !matiere || fichiers.length === 0 || (quota && quota.dispoMin === 0)} style={{ marginTop: 16, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", border: "none" }}>
             {busy ? <span className="spin-emoji">🤖</span> : "✨ Générer la Fiche avec Gemini"}
           </button>
           {msg && <p className="msg">{msg}</p>}
@@ -1271,6 +1368,19 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .markdown-body table { border-collapse: collapse; width: 100%; font-size: 14px; }
 .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
 .markdown-body th { background: rgba(47,107,255,.14); }
+
+
+/* ====== Compteur IA ====== */
+.quota { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03); }
+.quota-title { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
+.quota-title span { font-weight: 400; color: var(--txt-muted); }
+.quota-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.quota-line { display: flex; justify-content: space-between; font-size: 13px; color: var(--txt-muted); margin-bottom: 6px; }
+.quota-line b { color: var(--txt-main); }
+.quota-bar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
+.quota-bar i { display: block; height: 100%; border-radius: 99px; transition: width .4s; }
+.quota-foot { margin-top: 10px; font-size: 12.5px; color: var(--txt-muted); }
+@media (max-width: 520px) { .quota-grid { grid-template-columns: 1fr; } }
 
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .spin-emoji { display: inline-block; animation: spin 2s linear infinite; }

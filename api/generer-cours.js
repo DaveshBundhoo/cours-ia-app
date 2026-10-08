@@ -10,11 +10,26 @@
 //
 // Aucun paquet à installer : tout passe par fetch.
 
-const MODELES = [process.env.GEMINI_MODEL, "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"].filter(Boolean);
+// Limites de l'offre gratuite (à recopier depuis aistudio.google.com/rate-limit si elles changent).
+// rpm = requêtes par minute, rpd = requêtes par jour (remis à zéro à minuit, heure du Pacifique).
+const LIMITES = {
+  "gemini-3.8-flash": { rpm: 5, rpd: 20 },
+  "gemini-3.5-flash": { rpm: 5, rpd: 20 },
+};
 const TYPES_OK = ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"];
 const MAX_FICHIERS = 20;
 
 const erreur = (res, code, message) => res.status(code).json({ error: message });
+
+function debutJourPacifique(now) {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(now);
+  const g = (t) => Number(parts.find((p) => p.type === t).value);
+  return new Date(now.getTime() - (g("hour") * 3600 + g("minute") * 60 + g("second")) * 1000 - now.getMilliseconds());
+}
+const duree = (ms) => {
+  const s = Math.max(1, Math.ceil(ms / 1000));
+  return s >= 3600 ? Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min" : s >= 60 ? Math.ceil(s / 60) + " min" : s + " s";
+};
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default async function handler(req, res) {
@@ -63,7 +78,37 @@ export default async function handler(req, res) {
       parts.push({ inline_data: { mime_type: mime, data: f.data } });
     }
 
-    // 4) Gemini : on essaie plusieurs modèles, avec une nouvelle tentative si Google est surchargé
+    // 4) quotas : on regarde combien de générations la classe a déjà utilisées
+    const maintenant = new Date();
+    const debutJour = debutJourPacifique(maintenant);
+    let usage = [];
+    try {
+      const ur = await fetch(`${SB_URL}/rest/v1/ia_usage?select=modele,created_at&created_at=gte.${encodeURIComponent(debutJour.toISOString())}&order=created_at.asc&limit=1000`, { headers: sbHeaders });
+      if (ur.ok) usage = await ur.json(); // si la table n'existe pas encore, on ne bloque pas
+    } catch (e) {}
+    const compte = (m, depuisMs) => usage.filter((r) => r.modele === m && new Date(r.created_at).getTime() >= depuisMs).length;
+    const MODELES = Object.keys(LIMITES).filter((m) =>
+      compte(m, debutJour.getTime()) < LIMITES[m].rpd && compte(m, maintenant.getTime() - 60000) < LIMITES[m].rpm);
+    if (MODELES.length === 0) {
+      const jourPlein = Object.keys(LIMITES).every((m) => compte(m, debutJour.getTime()) >= LIMITES[m].rpd);
+      const attente = jourPlein
+        ? debutJour.getTime() + 86400000 - maintenant.getTime()
+        : Math.min(...usage.filter((r) => new Date(r.created_at).getTime() > maintenant.getTime() - 60000).map((r) => new Date(r.created_at).getTime() + 60000 - maintenant.getTime()));
+      return erreur(res, 429, jourPlein
+        ? "Le quota gratuit de la journée est épuisé pour toute la classe. Il revient dans environ " + duree(attente) + "."
+        : "Trop de générations en même temps (limite par minute). Réessaie dans " + duree(attente) + ".");
+    }
+    const noter = async (modele) => {
+      try {
+        await fetch(`${SB_URL}/rest/v1/ia_usage`, {
+          method: "POST",
+          headers: { ...sbHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ modele }),
+        });
+      } catch (e) {}
+    };
+
+    // 5) Gemini : on essaie les modèles qui ont encore de la place, avec une nouvelle tentative si Google est surchargé
     let texte = "", derniere = "";
     for (const modele of MODELES) {
       for (let essai = 0; essai < 2 && !texte; essai++) {
@@ -73,6 +118,7 @@ export default async function handler(req, res) {
           body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0.3 } }),
         });
         const brut = await g.text();
+        if (g.status !== 404 && g.status !== 503) await noter(modele); // compte comme une requête utilisée
         let data = null; try { data = JSON.parse(brut); } catch (e) {}
 
         if (g.ok) {
