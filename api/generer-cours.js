@@ -1,105 +1,93 @@
-import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+// api/generer-cours.js
+// Reçoit les fichiers (photos / PDF en base64), les envoie à Gemini et renvoie une synthèse.
+// Rien n'est sauvegardé ici : les fichiers passent juste par le serveur.
+//
+// Variables Vercel (Settings > Environment Variables) :
+//   GEMINI_API_KEY          (obligatoire)
+//   VITE_SUPABASE_URL       (déjà présente)
+//   VITE_SUPABASE_ANON_KEY  (déjà présente)
+//   GEMINI_MODEL            (facultatif : modèle à essayer en premier)
+//
+// Aucun paquet à installer : tout passe par fetch.
 
-export const config = {
-  runtime: 'edge', 
-};
+const MODELES = [process.env.GEMINI_MODEL, "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"].filter(Boolean);
+const TYPES_OK = ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"];
+const MAX_FICHIERS = 10;
 
-// Fonction spéciale pour envoyer le PDF à l'API "File" de Gemini depuis le serveur Edge
-async function uploadFileToGemini(base64Data, mimeType, apiKey) {
-  // Convertir le texte Base64 en fichier binaire
-  const binaryString = atob(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
+const erreur = (res, code, message) => res.status(code).json({ error: message });
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Téléverser le fichier sur les serveurs temporaires de Google
-  const res = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'X-Goog-Upload-Protocol': 'raw',
-      'X-Goog-Upload-Command': 'start, upload, finalize',
-      'X-Goog-Upload-Header-Content-Length': bytes.length.toString(),
-      'X-Goog-Upload-Header-Content-Type': mimeType,
-      'Content-Type': mimeType
-    },
-    body: bytes
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error("Échec de l'envoi du PDF vers Gemini : " + err);
-  }
-  
-  const data = await res.json();
-  return data.file; // Retourne un objet contenant l'URI du fichier
-}
-
-export default async function handler(req) {
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Méthode non autorisée' }), { status: 405 });
-  }
-
+export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "no-store");
   try {
-    const authHeader = req.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return new Response(JSON.stringify({ error: 'Non autorisé.' }), { status: 401 });
-    }
-    const token = authHeader.split(' ')[1];
-
-    const body = await req.json();
-    const { matiere, chapitre, fichiers } = body;
-
-    if (!matiere || !fichiers || fichiers.length === 0) {
-      return new Response(JSON.stringify({ error: 'Matière ou fichiers manquants' }), { status: 400 });
-    }
+    if (req.method !== "POST") return erreur(res, 405, "Méthode non autorisée.");
 
     const GKEY = process.env.GEMINI_API_KEY;
-    const SB_URL = process.env.VITE_SUPABASE_URL;
-    const SB_KEY = process.env.VITE_SUPABASE_ANON_KEY;
+    const SB_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
+    const SB_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    if (!GKEY) return erreur(res, 500, "GEMINI_API_KEY est absente de Vercel (Settings > Environment Variables), puis fais Redeploy.");
+    if (!SB_URL || !SB_KEY) return erreur(res, 500, "VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY manque dans Vercel.");
 
-    if (!GKEY || !SB_URL || !SB_KEY) throw new Error("Clés API manquantes.");
+    // 1) la personne doit être connectée
+    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (!token) return erreur(res, 401, "Non autorisé : recharge la page et reconnecte-toi.");
+    const u = await fetch(SB_URL + "/auth/v1/user", { headers: { apikey: SB_KEY, Authorization: "Bearer " + token } });
+    if (!u.ok) return erreur(res, 401, "Session expirée : reconnecte-toi puis réessaie.");
 
-    // 1. Vérification de l'utilisateur
-    const supabase = createClient(SB_URL, SB_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) throw new Error("Session expirée.");
+    // 2) lire la demande
+    let body = req.body;
+    if (typeof body === "string") { try { body = JSON.parse(body); } catch (e) { body = {}; } }
+    const matiere = String((body && body.matiere) || "").trim();
+    const chapitre = String((body && body.chapitre) || "Général").trim();
+    const fichiers = Array.isArray(body && body.fichiers) ? body.fichiers : [];
+    if (!matiere || fichiers.length === 0) return erreur(res, 400, "Matière ou fichiers manquants.");
+    if (fichiers.length > MAX_FICHIERS) return erreur(res, 400, `Maximum ${MAX_FICHIERS} fichiers à la fois.`);
 
-    // 2. On prépare les fichiers pour Gemini
-    const parts = [
-        { text: `Voici le support du cours de "${matiere}" (Chapitre : ${chapitre}). Synthétise ce document pour créer une fiche de révision complète et lisible en Markdown.` }
-    ];
-
+    // 3) préparer les fichiers pour Gemini
+    const parts = [{
+      text:
+        `Voici le support d'un cours de « ${matiere} » (chapitre : ${chapitre}).\n` +
+        `Rédige une fiche de révision en français, en Markdown, à usage personnel :\n` +
+        `- reformule avec tes propres mots, sans recopier le document mot pour mot ;\n` +
+        `- structure avec des titres (##), des listes à puces, les notions clés en gras ;\n` +
+        `- garde les définitions, formules et exemples importants ;\n` +
+        `- si un passage est illisible, écris [illisible] sans rien inventer ;\n` +
+        `- termine par une section « À retenir » avec l'essentiel.`,
+    }];
     for (const f of fichiers) {
-        if (f.mimeType === 'application/pdf') {
-            // Règle stricte de Google : Les PDF doivent passer par l'API File
-            const uploadedFile = await uploadFileToGemini(f.data, f.mimeType, GKEY);
-            parts.push({
-                fileData: { mimeType: uploadedFile.mimeType, fileUri: uploadedFile.uri }
-            });
-        } else {
-            // Les images (PNG, JPG) peuvent être envoyées directement
-            parts.push({
-                inlineData: { mimeType: f.mimeType, data: f.data }
-            });
-        }
+      const mime = String((f && f.mimeType) || "").toLowerCase();
+      if (!TYPES_OK.includes(mime) || !f.data) return erreur(res, 400, "Format non pris en charge (utilise PDF, JPG, PNG ou WEBP).");
+      parts.push({ inline_data: { mime_type: mime, data: f.data } });
     }
 
-    // 3. Appel de Gemini (on repasse sur Flash pour avoir 15 requêtes/minute !)
-    const genAI = new GoogleGenerativeAI(GKEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // 4) Gemini : on essaie plusieurs modèles, avec une nouvelle tentative si Google est surchargé
+    let texte = "", derniere = "";
+    for (const modele of MODELES) {
+      for (let essai = 0; essai < 2 && !texte; essai++) {
+        const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modele}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": GKEY },
+          body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { temperature: 0.3 } }),
+        });
+        const brut = await g.text();
+        let data = null; try { data = JSON.parse(brut); } catch (e) {}
 
-    const result = await model.generateContent(parts);
-    const text = result.response.text();
+        if (g.ok) {
+          const p = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+          texte = p.map((x) => x.text || "").join("").trim();
+          if (!texte) derniere = "Réponse vide (contenu bloqué ?).";
+          break;
+        }
+        derniere = `${modele} (${g.status}) : ` + ((data && data.error && data.error.message) || brut.slice(0, 200));
+        if (g.status === 503 || g.status === 429) { await pause(1500); continue; } // surcharge : on réessaie
+        break; // 404, 400… : on passe au modèle suivant
+      }
+      if (texte) break;
+    }
+    if (!texte) return erreur(res, 502, "Gemini n'a pas pu répondre. " + derniere);
 
-    return new Response(JSON.stringify({ cours_markdown: text }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-    });
-
-  } catch (error) {
-    console.error("Erreur Backend Edge:", error.message);
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    return res.status(200).json({ cours_markdown: texte });
+  } catch (e) {
+    return erreur(res, 500, "Erreur du serveur : " + (e && e.message ? e.message : e));
   }
-} 
+}
