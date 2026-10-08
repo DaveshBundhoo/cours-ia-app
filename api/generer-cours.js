@@ -102,4 +102,4 @@ export default async function handler(req) {
     console.error("Erreur Backend Edge:", error.message);
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
-}
+} 
