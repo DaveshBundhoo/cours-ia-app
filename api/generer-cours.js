@@ -12,7 +12,7 @@
 
 const MODELES = [process.env.GEMINI_MODEL, "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"].filter(Boolean);
 const TYPES_OK = ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"];
-const MAX_FICHIERS = 10;
+const MAX_FICHIERS = 20;
 
 const erreur = (res, code, message) => res.status(code).json({ error: message });
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -47,7 +47,9 @@ export default async function handler(req, res) {
     const parts = [{
       text:
         `Voici le support d'un cours de « ${matiere} » (chapitre : ${chapitre}).\n` +
-        `Rédige une fiche de révision en français, en Markdown, à usage personnel :\n` +
+        `Les fichiers suivants sont dans l'ordre des séances (plusieurs feuilles ou photos peuvent appartenir à la même séance).\n` +
+        `Fusionne-les en UNE SEULE fiche de révision cohérente du chapitre, en français, en Markdown, à usage personnel :\n` +
+        `- regroupe les idées par thème, supprime les répétitions entre les feuilles ;\n` +
         `- reformule avec tes propres mots, sans recopier le document mot pour mot ;\n` +
         `- structure avec des titres (##), des listes à puces, les notions clés en gras ;\n` +
         `- garde les définitions, formules et exemples importants ;\n` +
@@ -57,6 +59,7 @@ export default async function handler(req, res) {
     for (const f of fichiers) {
       const mime = String((f && f.mimeType) || "").toLowerCase();
       if (!TYPES_OK.includes(mime) || !f.data) return erreur(res, 400, "Format non pris en charge (utilise PDF, JPG, PNG ou WEBP).");
+      parts.push({ text: `--- Fichier ${parts.length > 1 ? Math.ceil(parts.length / 2) : 1} : ${String(f.nom || "sans nom").slice(0, 120)} ---` });
       parts.push({ inline_data: { mime_type: mime, data: f.data } });
     }
 

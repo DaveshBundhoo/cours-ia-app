@@ -442,6 +442,26 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onerror = error => reject(error);
 });
 
+// Réduit les photos (max 1600 px, JPEG) pour pouvoir envoyer beaucoup de pages d'un coup.
+// Les PDF ne sont pas modifiés.
+async function preparerFichier(file) {
+  if (!file.type.startsWith("image/")) return { mimeType: file.type, data: await fileToBase64(file) };
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = url; });
+    const r = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    return { mimeType: "image/jpeg", data: c.toDataURL("image/jpeg", 0.72).split(",")[1] };
+  } catch (e) {
+    return { mimeType: file.type, data: await fileToBase64(file) };
+  }
+}
+const LIMITE_ENVOI = 4 * 1024 * 1024; // Vercel refuse les envois > 4,5 Mo
+const taille = (o) => (o / 1024 / 1024).toFixed(1).replace(".", ",") + " Mo";
+
 function FichesView({ session, prenom, isAdmin }) {
   const [fiches, setFiches] = useState([]);
   
@@ -486,7 +506,15 @@ function FichesView({ session, prenom, isAdmin }) {
 
   const ajouterFichiers = (list) => {
     const ok = Array.from(list).filter((f) => /image\/|application\/pdf/.test(f.type));
-    setFichiers((prev) => [...prev, ...ok]);
+    setFichiers((prev) => [...prev, ...ok].slice(0, 20));
+  };
+  const deplacer = (i, d) => {
+    setFichiers((prev) => {
+      const j = i + d;
+      if (j < 0 || j >= prev.length) return prev;
+      const c = [...prev]; [c[i], c[j]] = [c[j], c[i]];
+      return c;
+    });
   };
 
   // 1. Envoyer les fichiers directement à l'API (SANS les sauvegarder dans Supabase)
@@ -499,10 +527,17 @@ function FichesView({ session, prenom, isAdmin }) {
     
     try {
       // Préparer les fichiers en Base64
-      const base64Files = await Promise.all(fichiers.map(async (f) => ({
-        mimeType: f.type,
-        data: await fileToBase64(f)
-      })));
+      const base64Files = [];
+      for (const f of fichiers) {
+        const p = await preparerFichier(f);
+        base64Files.push({ nom: f.name, mimeType: p.mimeType, data: p.data });
+      }
+      const poids = base64Files.reduce((t, f) => t + f.data.length, 0);
+      if (poids > LIMITE_ENVOI) {
+        setMsg("Trop lourd pour un seul envoi (" + taille(poids) + ", maximum 4 Mo). Retire quelques fichiers (surtout les PDF) ou fais deux fiches.");
+        setBusy(false);
+        return;
+      }
 
       const { data: { session: sess } } = await supabase.auth.getSession();
       
@@ -593,14 +628,24 @@ function FichesView({ session, prenom, isAdmin }) {
           <div className={"drop" + (drag ? " on" : "")} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); ajouterFichiers(e.dataTransfer.files); }}>
             <div style={{ fontSize: 32 }}>⬆️</div>
             <strong>Glisse les PDF ou photos ici</strong><span>ou touche pour parcourir</span>
-            <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => ajouterFichiers(e.target.files)} />
+            <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => { ajouterFichiers(e.target.files); e.target.value = ""; }} />
           </div>
           
           {fichiers.length > 0 && (
             <ul className="files">
               {fichiers.map((f, i) => (
-                <li key={i}><span>{f.name}</span><button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button></li>
+                <li key={f.name + i}>
+                  <span><b style={{ color: "var(--accent)", marginRight: 8 }}>{i + 1}.</b>{f.name}</span>
+                  <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button type="button" style={{ color: "var(--txt-muted)" }} disabled={i === 0} onClick={() => deplacer(i, -1)} title="Monter">↑</button>
+                    <button type="button" style={{ color: "var(--txt-muted)" }} disabled={i === fichiers.length - 1} onClick={() => deplacer(i, 1)} title="Descendre">↓</button>
+                    <button type="button" onClick={() => setFichiers(fichiers.filter((_, j) => j !== i))}>✕</button>
+                  </span>
+                </li>
               ))}
+              <li style={{ background: "transparent", border: "none", padding: "2px 4px", color: "var(--txt-muted)", fontSize: 13 }}>
+                {fichiers.length} fichier{fichiers.length > 1 ? "s" : ""} · {taille(fichiers.reduce((t, f) => t + f.size, 0))} · l'IA les lit dans cet ordre (maximum 20)
+              </li>
             </ul>
           )}
           
