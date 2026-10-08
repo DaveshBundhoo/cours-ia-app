@@ -358,6 +358,80 @@ function DatesView({ isAdmin }) {
   );
 }
 
+/* ---------------- Affichage du Markdown (titres, gras, listes… sans symboles) ---------------- */
+function mdInline(text, base) {
+  const out = [];
+  const re = /(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\s][^*]*\*)/g;
+  let last = 0, m, i = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0], key = base + "-" + i++;
+    if (t.startsWith("**") || t.startsWith("__")) out.push(<strong key={key}>{t.slice(2, -2)}</strong>);
+    else if (t.startsWith("`")) out.push(<code key={key}>{t.slice(1, -1)}</code>);
+    else out.push(<em key={key}>{t.slice(1, -1)}</em>);
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function Markdown({ texte }) {
+  const lignes = String(texte || "").replace(/\r/g, "").split("\n");
+  const blocs = [];
+  let liste = null, table = null, k = 0;
+  const fermer = () => {
+    if (liste) {
+      blocs.push(liste.ord ? <ol key={k++}>{liste.items}</ol> : <ul key={k++}>{liste.items}</ul>);
+      liste = null;
+    }
+    if (table) {
+      const [tete, ...corps] = table;
+      blocs.push(
+        <div className="md-table" key={k++}>
+          <table>
+            <thead><tr>{tete.map((c, i) => <th key={i}>{mdInline(c, "h" + i)}</th>)}</tr></thead>
+            <tbody>{corps.map((r, j) => <tr key={j}>{r.map((c, i) => <td key={i}>{mdInline(c, j + "-" + i)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      );
+      table = null;
+    }
+  };
+
+  lignes.forEach((brut) => {
+    const l = brut.trimEnd();
+    let m;
+    if (l.trim().startsWith("|")) {
+      if (/^\|?[\s:|-]+\|?$/.test(l.trim())) return; // ligne de séparation du tableau
+      if (liste) fermer();
+      if (!table) table = [];
+      table.push(l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim()));
+      return;
+    }
+    fermer();
+    if (!l.trim()) return;
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { blocs.push(<hr key={k++} />); return; }
+    if ((m = l.match(/^(#{1,5})\s+(.*)$/))) {
+      const Tag = "h" + Math.min(m[1].length + 1, 5);
+      blocs.push(<Tag key={k++}>{mdInline(m[2], "t" + k)}</Tag>);
+      return;
+    }
+    if ((m = l.match(/^\s*[-*•]\s+(.*)$/))) {
+      if (!liste || liste.ord) { fermer(); liste = { ord: false, items: [] }; }
+      liste.items.push(<li key={liste.items.length}>{mdInline(m[1], "l" + k + "-" + liste.items.length)}</li>);
+      return;
+    }
+    if ((m = l.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      if (!liste || !liste.ord) { fermer(); liste = { ord: true, items: [] }; }
+      liste.items.push(<li key={liste.items.length}>{mdInline(m[1], "o" + k + "-" + liste.items.length)}</li>);
+      return;
+    }
+    blocs.push(<p key={k++}>{mdInline(l.trim(), "p" + k)}</p>);
+  });
+  fermer();
+  return <>{blocs}</>;
+}
+
 /* ---------------- VUE SYNTHESES IA (Génération à la volée) ---------------- */
 
 // Fonction utilitaire pour lire un fichier local et le convertir en Base64
@@ -596,8 +670,8 @@ function FichesView({ session, prenom, isAdmin }) {
               <button className="action-btn x" onClick={() => { if(confirm("Quitter sans sauvegarder la fiche ?")) setPreviewModal(null); }} style={{ fontSize: 20 }}>✕</button>
             </div>
 
-            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: "1.6", fontSize: "15px" }}>
-              {previewModal.texte}
+            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", lineHeight: "1.6", fontSize: "15px" }}>
+              <Markdown texte={previewModal.texte} />
             </div>
             
             <div className="form-2" style={{ marginTop: 20 }}>
@@ -626,8 +700,8 @@ function FichesView({ session, prenom, isAdmin }) {
               <button className="action-btn x" onClick={() => setLectureModal(null)} style={{ fontSize: 20 }}>✕</button>
             </div>
 
-            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: "1.6", fontSize: "15px" }}>
-              {lectureModal.contenu}
+            <div className="markdown-body" style={{ flex: 1, background: "rgba(0,0,0,0.2)", padding: "20px", borderRadius: "12px", border: "1px solid var(--border)", overflowY: "auto", lineHeight: "1.6", fontSize: "15px" }}>
+              <Markdown texte={lectureModal.contenu} />
             </div>
             
             <button className="btn full" style={{ marginTop: 20 }} onClick={() => setLectureModal(null)}>Fermer</button>
@@ -1134,6 +1208,24 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bottom-link { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: transparent; border: none; color: var(--txt-muted); cursor: pointer; }
 .bottom-link.active { color: var(--accent); }
 .bottom-link .nav-label { font-size: 10.5px; font-weight: 500; }
+
+
+/* ====== Texte des fiches (Markdown) ====== */
+.markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5 { line-height: 1.3; margin: 22px 0 8px; letter-spacing: -.01em; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body h2 { font-size: 21px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.markdown-body h3 { font-size: 18px; color: #9db8ff; }
+.markdown-body h4, .markdown-body h5 { font-size: 16px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul, .markdown-body ol { margin: 8px 0 8px 22px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body strong { color: #fff; font-weight: 700; }
+.markdown-body hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+.markdown-body code { background: rgba(255,255,255,.08); padding: 1px 6px; border-radius: 5px; font-size: .92em; }
+.markdown-body .md-table { overflow-x: auto; margin: 12px 0; }
+.markdown-body table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+.markdown-body th { background: rgba(47,107,255,.14); }
 
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .spin-emoji { display: inline-block; animation: spin 2s linear infinite; }
